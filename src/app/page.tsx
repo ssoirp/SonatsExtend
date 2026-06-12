@@ -27,6 +27,8 @@ export default function Home() {
   const [bingoName, setBingoName] = useState('');
   const [playlistInput, setPlaylistInput] = useState('');
   const [playlistError, setPlaylistError] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
 
   useEffect(() => {
     setConnected(hasToken());
@@ -95,7 +97,20 @@ export default function Home() {
     try {
       await deleteSorteig(id);
       setSorteigs(s => s.filter(x => x.id !== id));
+    } catch (err) {
+      alert('Error eliminant: ' + (err as Error).message);
+      await loadSorteigs();
+    }
+  }
+
+  async function handleRename(id: string) {
+    const name = editName.trim();
+    if (!name) { setEditingId(null); return; }
+    try {
+      await updateSorteig(id, { name });
+      setSorteigs(s => s.map(x => x.id === id ? { ...x, name } : x));
     } catch { /* ignore */ }
+    setEditingId(null);
   }
 
   return (
@@ -190,12 +205,34 @@ export default function Home() {
                       cursor: 'pointer',
                       transition: 'background 0.15s',
                     }}
-                    onClick={() => router.push(`/sorteig/${s.id}`)}
+                    onClick={() => editingId !== s.id && router.push(`/sorteig/${s.id}`)}
                     onMouseEnter={e => { e.currentTarget.style.background = 'rgba(29,185,84,0.08)'; e.currentTarget.style.borderColor = 'rgba(29,185,84,0.2)'; }}
                     onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; e.currentTarget.style.borderColor = 'transparent'; }}
                     >
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{s.name}</p>
+                        {editingId === s.id ? (
+                          <input
+                            autoFocus
+                            value={editName}
+                            onChange={e => setEditName(e.target.value)}
+                            onBlur={() => handleRename(s.id)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleRename(s.id); if (e.key === 'Escape') setEditingId(null); }}
+                            onClick={e => e.stopPropagation()}
+                            style={{
+                              width: '100%', background: 'rgba(255,255,255,0.08)',
+                              border: '1px solid rgba(255,255,255,0.15)',
+                              borderRadius: 6, padding: '3px 8px',
+                              fontSize: 14, fontWeight: 600, color: 'var(--text)', outline: 'none',
+                            }}
+                          />
+                        ) : (
+                          <p
+                            style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}
+                            onDoubleClick={e => { e.stopPropagation(); setEditingId(s.id); setEditName(s.name ?? ''); }}
+                          >
+                            {s.name}
+                          </p>
+                        )}
                         <p style={{ fontSize: 11, color: 'var(--text3)', marginTop: 2 }}>
                           {s.n} cançons · {new Date(s.created_at).toLocaleDateString('ca')}
                         </p>

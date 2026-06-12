@@ -50,9 +50,12 @@ export default function SorteigPage() {
   const [playedIndices, setPlayedIndices] = useState<number[]>([]);
   const [currentItem, setCurrentItem] = useState<DbSorteigItem | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [countdownFraction, setCountdownFraction] = useState(0);
   const [totalSec, setTotalSec] = useState(0);
   const outMsRef = useRef(0);
+  const inMsRef = useRef(0);
   const localCountdownRef = useRef(0);
+  const totalSecRef = useRef(0);
   const advancingRef = useRef(false);
 
   useEffect(() => {
@@ -158,10 +161,13 @@ export default function SorteigPage() {
         }
       } catch { /* ignore */ }
       setCountdown(Math.ceil(localCountdownRef.current));
+      const total = totalSecRef.current;
+      setCountdownFraction(total > 0 ? Math.max(0, Math.min(1, localCountdownRef.current / total)) : 0);
       if (localCountdownRef.current <= 0 && !advancingRef.current) {
         advancingRef.current = true;
         stopPolling();
         setCountdown(null);
+        setCountdownFraction(0);
         playNextBingo();
       }
     }, 500);
@@ -185,10 +191,13 @@ export default function SorteigPage() {
     const inMs = item.in_ms ?? 30000;
     const outMs = item.out_ms ?? 60000;
     outMsRef.current = outMs;
+    inMsRef.current = inMs;
     const sec = Math.max(1, (outMs - inMs) / 1000);
     setTotalSec(sec);
+    totalSecRef.current = sec;
     localCountdownRef.current = sec;
     setCountdown(Math.ceil(sec));
+    setCountdownFraction(1);
 
     try {
       await playTrack(item.uri, inMs);
@@ -221,6 +230,7 @@ export default function SorteigPage() {
     setPlayedIndices([]);
     setCurrentItem(null);
     setCountdown(null);
+    setCountdownFraction(0);
     setIsPlaying(false);
   }
 
@@ -249,7 +259,7 @@ export default function SorteigPage() {
   });
 
   const CIRCUMFERENCE = 2 * Math.PI * 36;
-  const fraction = countdown !== null && totalSec > 0 ? countdown / totalSec : 0;
+  const fraction = countdownFraction;
   const progressColor = fraction > 0.5 ? '#1DB954' : fraction > 0.25 ? '#f0a500' : '#ff4757';
 
   return (
@@ -408,7 +418,7 @@ export default function SorteigPage() {
                         <circle cx={44} cy={44} r={36} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth={3.5} />
                         <circle cx={44} cy={44} r={36} fill="none" stroke={progressColor} strokeWidth={3.5}
                           strokeDasharray={CIRCUMFERENCE} strokeDashoffset={CIRCUMFERENCE * (1 - fraction)}
-                          strokeLinecap="round" style={{ transition: 'stroke-dashoffset 0.8s linear' }} />
+                          strokeLinecap="round" style={{ transition: 'stroke-dashoffset 0.5s linear, stroke 0.5s' }} />
                       </svg>
                       <div style={{
                         position: 'absolute', inset: 0,
@@ -422,7 +432,7 @@ export default function SorteigPage() {
                 </div>
                 {countdown !== null && (
                   <div style={{ marginTop: 16, height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${fraction * 100}%`, background: progressColor, borderRadius: 2, transition: 'width 0.8s linear' }} />
+                    <div style={{ height: '100%', width: `${fraction * 100}%`, background: progressColor, borderRadius: 2, transition: 'width 0.5s linear, background 0.5s' }} />
                   </div>
                 )}
               </>
