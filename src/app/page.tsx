@@ -1,8 +1,21 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { hasToken, startSpotifyAuth, clearToken, getUserPlaylists, getPlaylistTracks, type SpotifyPlaylist } from '@/lib/spotify';
+import { hasToken, startSpotifyAuth, clearToken, getPlaylistTracks } from '@/lib/spotify';
 import { fetchSorteigs, createSorteig, insertSorteigItems, lookupSongTimecodes, updateSorteig, deleteSorteig, type DbSorteig } from '@/lib/supabase';
+
+function parsePlaylistId(input: string): string | null {
+  const trimmed = input.trim();
+  // spotify:playlist:XXXXX
+  const uriMatch = trimmed.match(/^spotify:playlist:([a-zA-Z0-9]+)$/);
+  if (uriMatch) return uriMatch[1];
+  // https://open.spotify.com/playlist/XXXXX?...
+  const urlMatch = trimmed.match(/open\.spotify\.com\/playlist\/([a-zA-Z0-9]+)/);
+  if (urlMatch) return urlMatch[1];
+  // Just an ID
+  if (/^[a-zA-Z0-9]{10,}$/.test(trimmed)) return trimmed;
+  return null;
+}
 
 export default function Home() {
   const router = useRouter();
@@ -10,12 +23,10 @@ export default function Home() {
   const [sorteigs, setSorteigs] = useState<DbSorteig[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNewBingo, setShowNewBingo] = useState(false);
-  const [playlists, setPlaylists] = useState<SpotifyPlaylist[]>([]);
-  const [loadingPlaylists, setLoadingPlaylists] = useState(false);
   const [creating, setCreating] = useState(false);
   const [bingoName, setBingoName] = useState('');
-  const [selectedPlaylist, setSelectedPlaylist] = useState<string>('');
-  const [playlistSearch, setPlaylistSearch] = useState('');
+  const [playlistInput, setPlaylistInput] = useState('');
+  const [playlistError, setPlaylistError] = useState('');
 
   useEffect(() => {
     setConnected(hasToken());
@@ -30,29 +41,29 @@ export default function Home() {
     setLoading(false);
   }
 
-  async function handleShowNew() {
-    setShowNewBingo(true);
-    if (playlists.length === 0) {
-      setLoadingPlaylists(true);
-      try {
-        const pl = await getUserPlaylists();
-        setPlaylists(pl);
-      } catch { /* ignore */ }
-      setLoadingPlaylists(false);
-    }
-  }
-
   async function handleCreateBingo() {
-    if (!bingoName.trim() || !selectedPlaylist) return;
+    if (!bingoName.trim()) return;
+    const playlistId = parsePlaylistId(playlistInput);
+    if (!playlistId) {
+      setPlaylistError('URL o ID de playlist invàlida. Enganxa una URL de Spotify (https://open.spotify.com/playlist/...) o un ID.');
+      return;
+    }
+    setPlaylistError('');
     setCreating(true);
     try {
-      const tracks = await getPlaylistTracks(selectedPlaylist);
+      const tracks = await getPlaylistTracks(playlistId);
+      if (tracks.length === 0) {
+        setPlaylistError('La playlist està buida o no s\'ha pogut accedir.');
+        setCreating(false);
+        return;
+      }
+
       const uris = tracks.map(t => t.uri);
       const timecodes = await lookupSongTimecodes(uris);
 
       const sorteig = await createSorteig({
         name: bingoName.trim(),
-        playlistId: selectedPlaylist,
+        playlistId,
       });
 
       const items = tracks.map((track, i) => {
@@ -74,7 +85,7 @@ export default function Home() {
 
       router.push(`/sorteig/${sorteig.id}`);
     } catch (err) {
-      alert('Error creant el bingo: ' + (err as Error).message);
+      setPlaylistError('Error: ' + (err as Error).message);
     }
     setCreating(false);
   }
@@ -86,10 +97,6 @@ export default function Home() {
       setSorteigs(s => s.filter(x => x.id !== id));
     } catch { /* ignore */ }
   }
-
-  const filteredPlaylists = playlists.filter(p =>
-    !playlistSearch || p.name.toLowerCase().includes(playlistSearch.toLowerCase())
-  );
 
   return (
     <main className="fade-up" style={{
@@ -234,65 +241,46 @@ export default function Home() {
                   }}
                 />
 
-                <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', marginTop: 4 }}>
-                  Selecciona una playlist de Spotify
-                </p>
-
-                {loadingPlaylists ? (
-                  <p style={{ fontSize: 13, color: 'var(--text3)', textAlign: 'center', padding: 12 }}>
-                    Carregant playlists...
+                <div>
+                  <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--text2)', marginBottom: 6 }}>
+                    Playlist de Spotify
                   </p>
-                ) : (
-                  <>
-                    <input
-                      value={playlistSearch}
-                      onChange={e => setPlaylistSearch(e.target.value)}
-                      placeholder="Cerca playlist..."
-                      style={{
-                        padding: '8px 12px', background: 'rgba(255,255,255,0.05)',
-                        border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8,
-                        fontSize: 12, color: 'var(--text)', outline: 'none',
-                      }}
-                    />
-                    <div style={{ maxHeight: 200, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      {filteredPlaylists.map(p => (
-                        <button
-                          key={p.id}
-                          onClick={() => setSelectedPlaylist(p.id)}
-                          className="btn-interact"
-                          style={{
-                            padding: '8px 12px', borderRadius: 8, textAlign: 'left',
-                            background: selectedPlaylist === p.id ? 'rgba(29,185,84,0.15)' : 'rgba(255,255,255,0.03)',
-                            border: `1px solid ${selectedPlaylist === p.id ? 'rgba(29,185,84,0.3)' : 'transparent'}`,
-                            color: 'var(--text)', fontSize: 13,
-                          }}
-                        >
-                          <span style={{ fontWeight: 600 }}>{p.name}</span>
-                          <span style={{ color: 'var(--text3)', fontSize: 11, marginLeft: 8 }}>
-                            {p.tracks.total} cançons
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                )}
+                  <p style={{ fontSize: 10, color: 'var(--text3)', marginBottom: 8 }}>
+                    Enganxa la URL o ID de la playlist (p.ex. https://open.spotify.com/playlist/...)
+                  </p>
+                  <input
+                    value={playlistInput}
+                    onChange={e => { setPlaylistInput(e.target.value); setPlaylistError(''); }}
+                    placeholder="https://open.spotify.com/playlist/..."
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px', background: 'rgba(255,255,255,0.05)',
+                      border: `1px solid ${playlistError ? 'rgba(255,71,87,0.4)' : 'rgba(255,255,255,0.1)'}`,
+                      borderRadius: 10,
+                      fontSize: 13, color: 'var(--text)', outline: 'none',
+                    }}
+                  />
+                  {playlistError && (
+                    <p style={{ fontSize: 11, color: '#ff6b6b', marginTop: 6 }}>{playlistError}</p>
+                  )}
+                </div>
 
                 <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
                   <button
                     onClick={handleCreateBingo}
-                    disabled={!bingoName.trim() || !selectedPlaylist || creating}
+                    disabled={!bingoName.trim() || !playlistInput.trim() || creating}
                     className="btn-interact"
                     style={{
                       flex: 1, padding: '12px', borderRadius: 10,
                       fontSize: 14, fontWeight: 600,
                       background: '#1DB954', color: '#000',
-                      opacity: (!bingoName.trim() || !selectedPlaylist || creating) ? 0.4 : 1,
+                      opacity: (!bingoName.trim() || !playlistInput.trim() || creating) ? 0.4 : 1,
                     }}
                   >
-                    {creating ? 'Creant...' : 'Crear Bingo'}
+                    {creating ? 'Creant bingo...' : 'Crear Bingo'}
                   </button>
                   <button
-                    onClick={() => { setShowNewBingo(false); setBingoName(''); setSelectedPlaylist(''); }}
+                    onClick={() => { setShowNewBingo(false); setBingoName(''); setPlaylistInput(''); setPlaylistError(''); }}
                     className="btn-interact"
                     style={{
                       padding: '12px 18px', borderRadius: 10,
@@ -306,7 +294,7 @@ export default function Home() {
               </div>
             ) : (
               <button
-                onClick={handleShowNew}
+                onClick={() => setShowNewBingo(true)}
                 className="btn-interact"
                 style={{
                   width: '100%', padding: '16px', borderRadius: 14,

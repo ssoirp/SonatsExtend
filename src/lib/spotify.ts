@@ -1,6 +1,6 @@
 const CLIENT_ID = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID!;
 const REDIRECT_URI = process.env.NEXT_PUBLIC_SPOTIFY_REDIRECT_URI!;
-const SCOPES = 'user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative';
+const SCOPES = 'user-read-playback-state user-modify-playback-state';
 
 // PKCE helpers
 function generateCodeVerifier(length = 128) {
