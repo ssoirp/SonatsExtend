@@ -234,14 +234,20 @@ export default function SorteigPage() {
 
   async function handleSaveAll() {
     setSaving(true);
-    for (const item of items) {
-      if (item.in_ms != null || item.out_ms != null) {
-        await saveSongTimecodes(
-          item.uri,
-          item.in_ms != null ? Math.round(item.in_ms / 1000) : null,
-          item.out_ms != null ? Math.round(item.out_ms / 1000) : null,
-        );
+    try {
+      for (const item of items) {
+        if (item.in_ms != null || item.out_ms != null) {
+          await saveSongTimecodes(
+            item.uri,
+            item.title ?? '',
+            item.artist ?? '',
+            item.in_ms != null ? Math.round(item.in_ms / 1000) : null,
+            item.out_ms != null ? Math.round(item.out_ms / 1000) : null,
+          );
+        }
       }
+    } catch (err) {
+      alert('Error desant a la BBDD de cançons: ' + (err as Error).message);
     }
     setSaving(false);
   }
