@@ -1,6 +1,6 @@
 const CLIENT_ID = process.env.NEXT_PUBLIC_SPOTIFY_CLIENT_ID!;
 const REDIRECT_URI = process.env.NEXT_PUBLIC_SPOTIFY_REDIRECT_URI!;
-const SCOPES = 'user-read-playback-state user-modify-playback-state';
+const SCOPES = 'user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative';
 
 // PKCE helpers
 function generateCodeVerifier(length = 128) {
@@ -146,4 +146,46 @@ export async function getPlaybackState(): Promise<{ position_ms: number; is_play
   const data = await api('GET', '/me/player');
   if (!data) return null;
   return { position_ms: data.progress_ms ?? 0, is_playing: data.is_playing ?? false };
+}
+
+export interface SpotifyPlaylist {
+  id: string;
+  name: string;
+  images: { url: string }[];
+  tracks: { total: number };
+}
+
+export interface SpotifyTrack {
+  uri: string;
+  name: string;
+  artists: { name: string }[];
+  duration_ms: number;
+}
+
+export async function getUserPlaylists(): Promise<SpotifyPlaylist[]> {
+  const playlists: SpotifyPlaylist[] = [];
+  let url = '/me/playlists?limit=50';
+  while (url) {
+    const data = await api('GET', url);
+    if (!data) break;
+    playlists.push(...data.items);
+    url = data.next ? data.next.replace('https://api.spotify.com/v1', '') : '';
+  }
+  return playlists;
+}
+
+export async function getPlaylistTracks(playlistId: string): Promise<SpotifyTrack[]> {
+  const tracks: SpotifyTrack[] = [];
+  let url = `/playlists/${playlistId}/tracks?limit=100&fields=items(track(uri,name,artists(name),duration_ms)),next`;
+  while (url) {
+    const data = await api('GET', url);
+    if (!data) break;
+    for (const item of data.items) {
+      if (item.track && item.track.uri) {
+        tracks.push(item.track);
+      }
+    }
+    url = data.next ? data.next.replace('https://api.spotify.com/v1', '') : '';
+  }
+  return tracks;
 }
