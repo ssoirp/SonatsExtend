@@ -27,6 +27,7 @@ const GRID_OPTIONS = [
   { rows: 3, cols: 4, label: '3×4 (12)' },
   { rows: 4, cols: 3, label: '4×3 (12)' },
   { rows: 3, cols: 5, label: '3×5 (15)' },
+  { rows: 5, cols: 3, label: '5×3 (15)' },
   { rows: 4, cols: 4, label: '4×4 (16)' },
   { rows: 4, cols: 5, label: '4×5 (20)' },
   { rows: 5, cols: 4, label: '5×4 (20)' },
