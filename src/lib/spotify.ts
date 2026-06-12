@@ -142,6 +142,19 @@ export async function seekTo(position_ms: number) {
   await api('PUT', `/me/player/seek?position_ms=${Math.round(position_ms)}`, undefined);
 }
 
+export async function getTracksInfo(uris: string[]): Promise<SpotifyTrack[]> {
+  const ids = uris.map(u => u.split(':').pop()).filter((v): v is string => !!v);
+  const tracks: SpotifyTrack[] = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    const batch = ids.slice(i, i + 50);
+    const data = await api('GET', `/tracks?ids=${batch.join(',')}`);
+    for (const t of data?.tracks ?? []) {
+      if (t) tracks.push({ uri: t.uri, name: t.name, artists: t.artists, duration_ms: t.duration_ms });
+    }
+  }
+  return tracks;
+}
+
 export async function getTrackDuration(uri: string): Promise<number | null> {
   const id = uri.split(':').pop();
   if (!id) return null;
@@ -151,10 +164,10 @@ export async function getTrackDuration(uri: string): Promise<number | null> {
   } catch { return null; }
 }
 
-export async function getPlaybackState(): Promise<{ position_ms: number; is_playing: boolean } | null> {
+export async function getPlaybackState(): Promise<{ position_ms: number; is_playing: boolean; duration_ms: number | null } | null> {
   const data = await api('GET', '/me/player');
   if (!data) return null;
-  return { position_ms: data.progress_ms ?? 0, is_playing: data.is_playing ?? false };
+  return { position_ms: data.progress_ms ?? 0, is_playing: data.is_playing ?? false, duration_ms: data.item?.duration_ms ?? null };
 }
 
 export interface SpotifyPlaylist {

@@ -148,6 +148,11 @@ export async function updateSorteigItem(id: string, updates: { in_ms?: number | 
   if (error) throw error;
 }
 
+export async function deleteSorteigItem(id: string) {
+  const { error } = await supabase.from('sorteig_items').delete().eq('id', id);
+  if (error) throw error;
+}
+
 export async function lookupSongTimecodes(spotifyUris: string[]): Promise<Map<string, { in_bingo: number | null; out_bingo: number | null }>> {
   const map = new Map<string, { in_bingo: number | null; out_bingo: number | null }>();
   if (spotifyUris.length === 0) return map;

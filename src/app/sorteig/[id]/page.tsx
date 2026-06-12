@@ -1,9 +1,10 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { hasToken, playTrack, pausePlayback, seekTo, getPlaybackState, getTrackDuration } from '@/lib/spotify';
+import { hasToken, playTrack, pausePlayback, seekTo, getPlaybackState, getTrackDuration, getTracksInfo } from '@/lib/spotify';
 import {
   fetchSorteig, fetchSorteigItems, updateSorteigItem, updateSorteig, saveSongTimecodes,
+  insertSorteigItems, deleteSorteigItem, lookupSongTimecodes,
   type DbSorteig, type DbSorteigItem,
 } from '@/lib/supabase';
 
@@ -12,6 +13,17 @@ function formatMs(ms: number): string {
   const s = Math.floor((ms % 60000) / 1000);
   const t = Math.floor((ms % 1000) / 100);
   return `${m}:${String(s).padStart(2, '0')}.${t}`;
+}
+
+function parseSpotifyUri(raw: string): string | null {
+  const s = raw.trim();
+  if (!s) return null;
+  let m = s.match(/spotify:track:([a-zA-Z0-9]+)/);
+  if (m) return `spotify:track:${m[1]}`;
+  m = s.match(/open\.spotify\.com\/track\/([a-zA-Z0-9]+)/);
+  if (m) return `spotify:track:${m[1]}`;
+  if (/^[a-zA-Z0-9]{22}$/.test(s)) return `spotify:track:${s}`;
+  return null;
 }
 
 function parseMsInput(input: string): number | null {
@@ -40,6 +52,10 @@ export default function SorteigPage() {
   const [filter, setFilter] = useState<'all' | 'ok' | 'missing'>('all');
   const [saving, setSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<Record<string, 'saving' | 'saved' | 'error'>>({});
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
 
   // Playback state
   const [activeUri, setActiveUri] = useState<string | null>(null);
@@ -53,8 +69,11 @@ export default function SorteigPage() {
   const [countdown, setCountdown] = useState<number | null>(null);
   const [countdownFraction, setCountdownFraction] = useState(0);
   const [totalSec, setTotalSec] = useState(0);
+  const [autoMode, setAutoMode] = useState(true);
   const outMsRef = useRef(0);
   const inMsRef = useRef(0);
+  const durationMsRef = useRef<number | null>(null);
+  const autoModeRef = useRef(true);
   const localCountdownRef = useRef(0);
   const totalSecRef = useRef(0);
   const advancingRef = useRef(false);
@@ -148,6 +167,71 @@ export default function SorteigPage() {
     }
   }
 
+  async function handleDeleteItem(itemId: string) {
+    if (!confirm('Eliminar aquesta cançó del bingo?')) return;
+    try {
+      await deleteSorteigItem(itemId);
+      setItems(prev => {
+        const next = prev.filter(it => it.id !== itemId);
+        updateSorteig(id, { n: next.length }).catch(() => {});
+        return next;
+      });
+    } catch (err) {
+      alert('Error eliminant la cançó: ' + (err as Error).message);
+    }
+  }
+
+  async function handleImportUris() {
+    const lines = importText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const parsed = lines.map(parseSpotifyUri).filter((u): u is string => u !== null);
+    const uniqueNew = [...new Set(parsed)].filter(uri => !items.some(it => it.uri === uri));
+
+    if (parsed.length === 0) {
+      setImportResult('No s\'ha trobat cap URI vàlida.');
+      return;
+    }
+    if (uniqueNew.length === 0) {
+      setImportResult('Totes les URIs ja són a la llista.');
+      return;
+    }
+
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const tracks = await getTracksInfo(uniqueNew);
+      const timecodes = await lookupSongTimecodes(uniqueNew);
+      let nextPos = items.reduce((max, it) => Math.max(max, it.position), 0) + 1;
+
+      const newItems = tracks.map(track => {
+        const tc = timecodes.get(track.uri);
+        return {
+          sorteig_id: id,
+          position: nextPos++,
+          uri: track.uri,
+          title: track.name,
+          artist: track.artists.map(a => a.name).join(', '),
+          in_ms: tc?.in_bingo != null ? tc.in_bingo * 1000 : null,
+          out_ms: tc?.out_bingo != null ? tc.out_bingo * 1000 : null,
+          is_star: false,
+        };
+      });
+
+      await insertSorteigItems(newItems);
+      await updateSorteig(id, { n: items.length + newItems.length });
+      await loadData();
+
+      const withCues = newItems.filter(it => it.in_ms != null && it.out_ms != null).length;
+      const notFound = uniqueNew.length - tracks.length;
+      let msg = `Importades ${newItems.length} cançó(ns), ${withCues} amb IN/OUT ja definits.`;
+      if (notFound > 0) msg += ` ${notFound} URI(s) no trobades a Spotify.`;
+      setImportResult(msg);
+      setImportText('');
+    } catch (err) {
+      setImportResult('Error important: ' + (err as Error).message);
+    }
+    setImporting(false);
+  }
+
   async function handleSaveAll() {
     setSaving(true);
     for (const item of items) {
@@ -165,6 +249,12 @@ export default function SorteigPage() {
   // Bingo play logic
   const remainingItems = items.filter((_, i) => !playedIndices.includes(i));
 
+  // En mode auto, el tall es fa a l'OUT marcat; si no, sona fins al final real de la cançó
+  function getEndMs() {
+    if (autoModeRef.current) return outMsRef.current;
+    return durationMsRef.current ?? outMsRef.current;
+  }
+
   function startBingoPolling() {
     stopPolling();
     advancingRef.current = false;
@@ -173,11 +263,14 @@ export default function SorteigPage() {
       try {
         const state = await getPlaybackState();
         if (state) {
-          localCountdownRef.current = Math.max(0, (outMsRef.current - state.position_ms) / 1000);
+          if (state.duration_ms != null) durationMsRef.current = state.duration_ms;
+          localCountdownRef.current = Math.max(0, (getEndMs() - state.position_ms) / 1000);
         }
       } catch { /* ignore */ }
+      const total = Math.max(1, (getEndMs() - inMsRef.current) / 1000);
+      totalSecRef.current = total;
+      setTotalSec(total);
       setCountdown(Math.ceil(localCountdownRef.current));
-      const total = totalSecRef.current;
       setCountdownFraction(total > 0 ? Math.max(0, Math.min(1, localCountdownRef.current / total)) : 0);
       if (localCountdownRef.current <= 0 && !advancingRef.current) {
         advancingRef.current = true;
@@ -187,6 +280,25 @@ export default function SorteigPage() {
         playNextBingo();
       }
     }, 500);
+  }
+
+  function toggleAutoMode() {
+    const next = !autoMode;
+    setAutoMode(next);
+    autoModeRef.current = next;
+    if (next && isPlaying) {
+      // Si ja hem passat el punt OUT, salta a la següent immediatament
+      getPlaybackState().then(state => {
+        if (!state || advancingRef.current) return;
+        if (state.position_ms >= outMsRef.current) {
+          advancingRef.current = true;
+          stopPolling();
+          setCountdown(null);
+          setCountdownFraction(0);
+          playNextBingo();
+        }
+      }).catch(() => {});
+    }
   }
 
   async function playNextBingo(customRemaining?: DbSorteigItem[]) {
@@ -208,6 +320,7 @@ export default function SorteigPage() {
     const outMs = item.out_ms ?? 60000;
     outMsRef.current = outMs;
     inMsRef.current = inMs;
+    durationMsRef.current = null;
     const sec = Math.max(1, (outMs - inMs) / 1000);
     setTotalSec(sec);
     totalSecRef.current = sec;
@@ -346,6 +459,55 @@ export default function SorteigPage() {
             </button>
           </div>
 
+          {/* Import URIs */}
+          <div style={{
+            marginBottom: 12, borderRadius: 12, background: '#161622',
+            border: '1px solid rgba(255,255,255,0.07)', overflow: 'hidden',
+          }}>
+            <button onClick={() => setImportOpen(o => !o)} style={{
+              width: '100%', textAlign: 'left', padding: '10px 14px',
+              background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text)',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              fontSize: 13, fontWeight: 600,
+            }}>
+              <span>＋ Importar cançons (URIs / enllaços de Spotify)</span>
+              <span style={{ fontSize: 11, color: 'var(--text3)' }}>{importOpen ? '▲' : '▼'}</span>
+            </button>
+            {importOpen && (
+              <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <textarea
+                  value={importText}
+                  onChange={e => setImportText(e.target.value)}
+                  placeholder={'Una per línia:\nspotify:track:XXXXXXXXXXXXXXXXXXXXXX\nhttps://open.spotify.com/track/XXXXXXXXXXXXXXXXXXXXXX'}
+                  rows={4}
+                  style={{
+                    fontFamily: 'var(--font-mono)', fontSize: 12, padding: '8px 10px', borderRadius: 8,
+                    background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+                    color: 'var(--text)', outline: 'none', resize: 'vertical',
+                  }}
+                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <button
+                    onClick={handleImportUris}
+                    disabled={importing || !importText.trim()}
+                    className="btn-interact"
+                    style={{
+                      padding: '7px 14px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+                      background: importing ? '#26263a' : '#1DB954',
+                      color: importing ? 'var(--text2)' : '#000',
+                      opacity: !importText.trim() ? 0.5 : 1,
+                    }}
+                  >
+                    {importing ? 'Important...' : 'Importar'}
+                  </button>
+                  {importResult && (
+                    <span style={{ fontSize: 11, color: 'var(--text3)' }}>{importResult}</span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
             <input
               type="text" placeholder="Cerca..." value={search}
@@ -384,6 +546,7 @@ export default function SorteigPage() {
                 onOutChange={ms => handleUpdateItem(item.id, 'out_ms', ms)}
                 onSetIn={ms => handleUpdateItem(item.id, 'in_ms', ms)}
                 onSetOut={ms => handleUpdateItem(item.id, 'out_ms', ms)}
+                onDelete={() => handleDeleteItem(item.id)}
               />
             ))}
           </div>
@@ -463,6 +626,31 @@ export default function SorteigPage() {
             )}
           </div>
 
+          {/* Auto mode toggle */}
+          <div style={{ maxWidth: 460, width: '100%', display: 'flex', justifyContent: 'center' }}>
+            <button onClick={toggleAutoMode} className="btn-interact" style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 16px', borderRadius: 999,
+              background: autoMode ? 'rgba(29,185,84,0.12)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${autoMode ? 'rgba(29,185,84,0.3)' : 'rgba(255,255,255,0.1)'}`,
+              color: autoMode ? '#1DB954' : 'var(--text3)',
+              fontSize: 12, fontWeight: 600,
+            }}>
+              <span style={{
+                width: 28, height: 16, borderRadius: 999, position: 'relative', flexShrink: 0,
+                background: autoMode ? '#1DB954' : 'rgba(255,255,255,0.15)',
+                transition: 'background 0.2s',
+              }}>
+                <span style={{
+                  position: 'absolute', top: 2, left: autoMode ? 14 : 2,
+                  width: 12, height: 12, borderRadius: '50%', background: '#fff',
+                  transition: 'left 0.2s',
+                }} />
+              </span>
+              Mode Auto {autoMode ? "— talla a l'OUT" : '— sona fins al final'}
+            </button>
+          </div>
+
           {/* Controls */}
           <div style={{ maxWidth: 460, width: '100%', display: 'flex', gap: 10 }}>
             {currentItem === null && remainingItems.length === 0 ? (
@@ -531,7 +719,7 @@ export default function SorteigPage() {
   );
 }
 
-function SongItemEditor({ item, isActive, isPlaying, positionMs, saveStatus, onPlay, onPause, onPreview, onSeek, onInChange, onOutChange, onSetIn, onSetOut }: {
+function SongItemEditor({ item, isActive, isPlaying, positionMs, saveStatus, onPlay, onPause, onPreview, onSeek, onInChange, onOutChange, onSetIn, onSetOut, onDelete }: {
   item: DbSorteigItem;
   isActive: boolean;
   isPlaying: boolean;
@@ -545,6 +733,7 @@ function SongItemEditor({ item, isActive, isPlaying, positionMs, saveStatus, onP
   onOutChange: (ms: number | null) => void;
   onSetIn: (ms: number) => void;
   onSetOut: (ms: number) => void;
+  onDelete: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [inInput, setInInput] = useState(item.in_ms != null ? formatMs(item.in_ms) : '');
@@ -616,6 +805,17 @@ function SongItemEditor({ item, isActive, isPlaying, positionMs, saveStatus, onP
             background: badge.bg, color: badge.color,
           }}>
             {badge.label}
+          </span>
+          <span
+            onClick={e => { e.stopPropagation(); onDelete(); }}
+            title="Eliminar cançó"
+            role="button"
+            style={{
+              fontSize: 13, color: 'var(--text3)', padding: '4px 6px', borderRadius: 6,
+              lineHeight: 1, cursor: 'pointer',
+            }}
+          >
+            🗑
           </span>
           <span style={{ fontSize: 11, color: 'var(--text3)' }}>{expanded ? '▲' : '▼'}</span>
         </div>
