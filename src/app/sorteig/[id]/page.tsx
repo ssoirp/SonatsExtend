@@ -523,7 +523,15 @@ export default function SorteigPage() {
     }
     if (currentItem) {
       try {
-        await playTrack(currentItem.uri, currentPositionRef.current);
+        // Agafem la posició real de Spotify just abans de reprendre, perquè
+        // la guardada (BBDD/ref) pot quedar desfasada i provocar un salt/tall audible.
+        let resumePos = currentPositionRef.current;
+        try {
+          const state = await getPlaybackState();
+          if (state) resumePos = state.position_ms;
+        } catch { /* ignore */ }
+        currentPositionRef.current = resumePos;
+        await playTrack(currentItem.uri, resumePos);
         setIsPlaying(true);
         startBingoPolling();
         persistPlayState({ isPlaying: true });

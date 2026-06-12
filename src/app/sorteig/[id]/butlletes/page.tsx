@@ -5,6 +5,7 @@ import QRCode from 'qrcode';
 import {
   fetchSorteig, fetchSorteigItems, updateSorteig,
   createPaymentTicket, fetchUnclaimedPaymentTicket, fetchTicketById,
+  deleteTicketsForSorteig, resetSorteigPlayState,
   type DbSorteig, type DbSorteigItem, type DbTicket,
 } from '@/lib/supabase';
 
@@ -54,6 +55,14 @@ export default function ButlletesPage() {
   const [generatingTicket, setGeneratingTicket] = useState(false);
   const paymentCanvasRef = useRef<HTMLCanvasElement>(null);
   const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Eliminar butlletes
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletingTickets, setDeletingTickets] = useState(false);
+
+  // Reiniciar sorteig
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resettingSorteig, setResettingSorteig] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -145,6 +154,29 @@ export default function ButlletesPage() {
       alert('Error generant la butlleta: ' + (err as Error).message);
     }
     setGeneratingTicket(false);
+  }
+
+  async function handleDeleteTickets() {
+    setDeletingTickets(true);
+    try {
+      await deleteTicketsForSorteig(id);
+      setPaymentTicket(null);
+      setShowDeleteConfirm(false);
+    } catch (err) {
+      alert('Error eliminant les butlletes: ' + (err as Error).message);
+    }
+    setDeletingTickets(false);
+  }
+
+  async function handleResetSorteig() {
+    setResettingSorteig(true);
+    try {
+      await resetSorteigPlayState(id);
+      setShowResetConfirm(false);
+    } catch (err) {
+      alert('Error reiniciant el sorteig: ' + (err as Error).message);
+    }
+    setResettingSorteig(false);
   }
 
   async function handleSaveGrid() {
@@ -462,7 +494,161 @@ export default function ButlletesPage() {
             )}
           </div>
         )}
+
+        {/* Reiniciar sorteig */}
+        <div style={{
+          background: '#161622', borderRadius: 16,
+          border: '1px solid rgba(240,165,0,0.2)', padding: 16,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <div>
+            <p style={{ fontSize: 13, fontWeight: 700, color: '#f0a500' }}>Reiniciar sorteig</p>
+            <p style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, maxWidth: 320 }}>
+              Esborra la llista de cançons ja sonades i permet tornar a reproduir-les des de zero.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            className="btn-interact"
+            style={{
+              padding: '8px 16px', borderRadius: 8, flexShrink: 0,
+              fontSize: 12, fontWeight: 700,
+              background: 'rgba(240,165,0,0.1)', border: '1px solid rgba(240,165,0,0.3)',
+              color: '#f0a500',
+            }}
+          >
+            Reiniciar
+          </button>
+        </div>
+
+        {/* Eliminar butlletes */}
+        <div style={{
+          background: '#161622', borderRadius: 16,
+          border: '1px solid rgba(255,107,107,0.2)', padding: 16,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <div>
+            <p style={{ fontSize: 13, fontWeight: 700, color: '#ff6b6b' }}>Eliminar butlletes</p>
+            <p style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, maxWidth: 320 }}>
+              Esborra totes les butlletes generades per aquest sorteig (gratuïtes i de pagament).
+            </p>
+          </div>
+          <button
+            onClick={() => setShowDeleteConfirm(true)}
+            className="btn-interact"
+            style={{
+              padding: '8px 16px', borderRadius: 8, flexShrink: 0,
+              fontSize: 12, fontWeight: 700,
+              background: 'rgba(255,107,107,0.1)', border: '1px solid rgba(255,107,107,0.3)',
+              color: '#ff6b6b',
+            }}
+          >
+            Eliminar
+          </button>
+        </div>
       </main>
+
+      {/* Popup de confirmació - reiniciar sorteig */}
+      {showResetConfirm && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 100,
+          background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        }}>
+          <div style={{
+            background: '#161622', borderRadius: 16,
+            border: '1px solid rgba(240,165,0,0.3)', padding: 24,
+            maxWidth: 360, width: '100%',
+          }}>
+            <p style={{ fontSize: 32, textAlign: 'center', marginBottom: 8 }}>🔄</p>
+            <p style={{ fontSize: 15, fontWeight: 700, textAlign: 'center', marginBottom: 8 }}>
+              Reiniciar el sorteig?
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--text3)', textAlign: 'center', marginBottom: 20 }}>
+              S&apos;esborrarà la llista de cançons ja sonades i la reproducció es podrà
+              tornar a començar des de zero.
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                disabled={resettingSorteig}
+                className="btn-interact"
+                style={{
+                  flex: 1, padding: '10px 16px', borderRadius: 10,
+                  fontSize: 13, fontWeight: 600,
+                  background: 'rgba(255,255,255,0.07)', color: 'var(--text2)',
+                }}
+              >
+                Cancel·lar
+              </button>
+              <button
+                onClick={handleResetSorteig}
+                disabled={resettingSorteig}
+                className="btn-interact"
+                style={{
+                  flex: 1, padding: '10px 16px', borderRadius: 10,
+                  fontSize: 13, fontWeight: 700,
+                  background: '#f0a500', color: '#000',
+                  opacity: resettingSorteig ? 0.6 : 1,
+                }}
+              >
+                {resettingSorteig ? 'Reiniciant...' : 'Sí, reiniciar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Popup de confirmació */}
+      {showDeleteConfirm && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 100,
+          background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        }}>
+          <div style={{
+            background: '#161622', borderRadius: 16,
+            border: '1px solid rgba(255,107,107,0.3)', padding: 24,
+            maxWidth: 360, width: '100%',
+          }}>
+            <p style={{ fontSize: 32, textAlign: 'center', marginBottom: 8 }}>⚠️</p>
+            <p style={{ fontSize: 15, fontWeight: 700, textAlign: 'center', marginBottom: 8 }}>
+              Eliminar totes les butlletes?
+            </p>
+            <p style={{ fontSize: 12, color: 'var(--text3)', textAlign: 'center', marginBottom: 20 }}>
+              Aquesta acció no es pot desfer. Totes les butlletes generades per aquest sorteig
+              (incloses les de pagament ja escanejades) s&apos;eliminaran permanentment.
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={deletingTickets}
+                className="btn-interact"
+                style={{
+                  flex: 1, padding: '10px 16px', borderRadius: 10,
+                  fontSize: 13, fontWeight: 600,
+                  background: 'rgba(255,255,255,0.07)', color: 'var(--text2)',
+                }}
+              >
+                Cancel·lar
+              </button>
+              <button
+                onClick={handleDeleteTickets}
+                disabled={deletingTickets}
+                className="btn-interact"
+                style={{
+                  flex: 1, padding: '10px 16px', borderRadius: 10,
+                  fontSize: 13, fontWeight: 700,
+                  background: '#ff6b6b', color: '#000',
+                  opacity: deletingTickets ? 0.6 : 1,
+                }}
+              >
+                {deletingTickets ? 'Eliminant...' : 'Sí, eliminar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

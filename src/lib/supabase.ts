@@ -333,3 +333,19 @@ export async function fetchTicketsForSorteig(sorteigId: string): Promise<DbTicke
   if (error) return [];
   return data ?? [];
 }
+
+export async function deleteTicketsForSorteig(sorteigId: string) {
+  const { error } = await supabase
+    .from('tickets')
+    .delete()
+    .eq('sorteig_id', sorteigId);
+  if (error) throw error;
+}
+
+export async function resetSorteigPlayState(sorteigId: string) {
+  const { error } = await supabase
+    .from('sorteigs')
+    .update({ play_state: null })
+    .eq('id', sorteigId);
+  if (error) throw error;
+}
