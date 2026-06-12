@@ -26,6 +26,7 @@ const GRID_OPTIONS = [
   { rows: 3, cols: 3, label: '3×3 (9)' },
   { rows: 3, cols: 4, label: '3×4 (12)' },
   { rows: 4, cols: 3, label: '4×3 (12)' },
+  { rows: 3, cols: 5, label: '3×5 (15)' },
   { rows: 4, cols: 4, label: '4×4 (16)' },
   { rows: 4, cols: 5, label: '4×5 (20)' },
   { rows: 5, cols: 4, label: '5×4 (20)' },
@@ -317,11 +318,11 @@ export default function ButlletesPage() {
                   display: 'flex', flexDirection: 'column',
                   alignItems: 'center', justifyContent: 'center',
                 }}>
-                  <p style={{ fontSize: 9, fontWeight: 600, color: 'var(--text)', lineHeight: 1.2 }}>
-                    {song?.title?.slice(0, 20) ?? '—'}
+                  <p style={{ fontSize: 9, fontWeight: 700, color: 'var(--text)', lineHeight: 1.2 }}>
+                    {song?.artist?.slice(0, 18) ?? '—'}
                   </p>
                   <p style={{ fontSize: 8, color: 'var(--text3)', marginTop: 2 }}>
-                    {song?.artist?.slice(0, 18) ?? ''}
+                    {song?.title?.slice(0, 20) ?? ''}
                   </p>
                 </div>
               );
