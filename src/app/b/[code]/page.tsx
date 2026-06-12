@@ -260,8 +260,8 @@ export default function ButlletaPage() {
                 {song.artist}
               </p>
               <p style={{
-                fontSize: 9, marginTop: 3,
-                color: isMarked ? 'rgba(29,185,84,0.7)' : 'rgba(240,240,250,0.35)',
+                fontSize: 12, fontWeight: 700, marginTop: 3,
+                color: isMarked ? 'rgba(29,185,84,0.7)' : 'rgba(240,240,250,0.6)',
               }}>
                 {song.title}
               </p>

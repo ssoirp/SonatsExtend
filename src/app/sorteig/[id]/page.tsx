@@ -799,15 +799,15 @@ export default function SorteigPage() {
                       {playedIndices.length} / {items.length}
                     </span>
                     <p style={{
-                      fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
-                      letterSpacing: '0.1em', color: 'var(--text3)', margin: '10px 0',
+                      fontFamily: 'var(--font-display)',
+                      fontSize: 'clamp(20px, 4vw, 28px)', fontWeight: 800,
+                      letterSpacing: '-0.3px', lineHeight: 1.15, margin: '10px 0 4px',
                     }}>
                       {currentItem.artist}
                     </p>
                     <p style={{
-                      fontFamily: 'var(--font-display)',
-                      fontSize: 'clamp(22px, 4vw, 30px)', fontWeight: 800,
-                      letterSpacing: '-0.3px', lineHeight: 1.15,
+                      fontSize: 'clamp(15px, 2.5vw, 19px)', fontWeight: 600,
+                      letterSpacing: '-0.2px', lineHeight: 1.2, color: 'var(--text2)',
                     }}>
                       {currentItem.title}
                     </p>
