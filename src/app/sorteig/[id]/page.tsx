@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { hasToken, playTrack, pausePlayback, seekTo, getPlaybackState } from '@/lib/spotify';
+import { hasToken, playTrack, pausePlayback, seekTo, getPlaybackState, getTrackDuration } from '@/lib/spotify';
 import {
   fetchSorteig, fetchSorteigItems, updateSorteigItem, updateSorteig, saveSongTimecodes,
   type DbSorteig, type DbSorteigItem,
@@ -39,6 +39,7 @@ export default function SorteigPage() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'ok' | 'missing'>('all');
   const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<Record<string, 'saving' | 'saved' | 'error'>>({});
 
   // Playback state
   const [activeUri, setActiveUri] = useState<string | null>(null);
@@ -129,7 +130,22 @@ export default function SorteigPage() {
 
   async function handleUpdateItem(itemId: string, field: 'in_ms' | 'out_ms', value: number | null) {
     setItems(prev => prev.map(it => it.id === itemId ? { ...it, [field]: value } : it));
-    await updateSorteigItem(itemId, { [field]: value });
+    setSaveStatus(s => ({ ...s, [itemId]: 'saving' }));
+    try {
+      await updateSorteigItem(itemId, { [field]: value });
+      setSaveStatus(s => ({ ...s, [itemId]: 'saved' }));
+      setTimeout(() => {
+        setSaveStatus(s => {
+          if (s[itemId] !== 'saved') return s;
+          const next = { ...s };
+          delete next[itemId];
+          return next;
+        });
+      }, 1500);
+    } catch (err) {
+      setSaveStatus(s => ({ ...s, [itemId]: 'error' }));
+      alert('Error desant el canvi: ' + (err as Error).message);
+    }
   }
 
   async function handleSaveAll() {
@@ -359,6 +375,7 @@ export default function SorteigPage() {
                 isActive={activeUri === item.uri}
                 isPlaying={activeUri === item.uri && isPlaying}
                 positionMs={activeUri === item.uri ? positionMs : 0}
+                saveStatus={saveStatus[item.id]}
                 onPlay={ms => handlePlay(item.uri, ms)}
                 onPause={handlePause}
                 onPreview={() => handlePreview(item)}
@@ -514,11 +531,12 @@ export default function SorteigPage() {
   );
 }
 
-function SongItemEditor({ item, isActive, isPlaying, positionMs, onPlay, onPause, onPreview, onSeek, onInChange, onOutChange, onSetIn, onSetOut }: {
+function SongItemEditor({ item, isActive, isPlaying, positionMs, saveStatus, onPlay, onPause, onPreview, onSeek, onInChange, onOutChange, onSetIn, onSetOut }: {
   item: DbSorteigItem;
   isActive: boolean;
   isPlaying: boolean;
   positionMs: number;
+  saveStatus?: 'saving' | 'saved' | 'error';
   onPlay: (ms: number) => void;
   onPause: () => void;
   onPreview: () => void;
@@ -531,11 +549,18 @@ function SongItemEditor({ item, isActive, isPlaying, positionMs, onPlay, onPause
   const [expanded, setExpanded] = useState(false);
   const [inInput, setInInput] = useState(item.in_ms != null ? formatMs(item.in_ms) : '');
   const [outInput, setOutInput] = useState(item.out_ms != null ? formatMs(item.out_ms) : '');
+  const [durationMs, setDurationMs] = useState<number | null>(null);
 
   useEffect(() => {
     setInInput(item.in_ms != null ? formatMs(item.in_ms) : '');
     setOutInput(item.out_ms != null ? formatMs(item.out_ms) : '');
   }, [item.in_ms, item.out_ms]);
+
+  useEffect(() => {
+    if (expanded && durationMs === null) {
+      getTrackDuration(item.uri).then(setDurationMs);
+    }
+  }, [expanded, durationMs, item.uri]);
 
   const hasIn = item.in_ms != null;
   const hasOut = item.out_ms != null;
@@ -661,6 +686,27 @@ function SongItemEditor({ item, isActive, isPlaying, positionMs, onPlay, onPause
             )}
           </div>
 
+          {/* Timeline visualizer */}
+          <Timeline
+            durationMs={durationMs}
+            inMs={item.in_ms}
+            outMs={item.out_ms}
+            positionMs={isActive ? positionMs : null}
+            onSeek={onSeek}
+            onInChange={onInChange}
+            onOutChange={onOutChange}
+          />
+
+          {/* Save status */}
+          {saveStatus && (
+            <p style={{
+              fontSize: 10, fontWeight: 600, textAlign: 'right', marginTop: -4,
+              color: saveStatus === 'error' ? '#ff6b6b' : saveStatus === 'saved' ? '#1DB954' : 'var(--text3)',
+            }}>
+              {saveStatus === 'saving' ? 'Desant…' : saveStatus === 'saved' ? '✓ Desat' : '✕ Error en desar'}
+            </p>
+          )}
+
           {/* IN / OUT inputs */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -694,6 +740,126 @@ function SongItemEditor({ item, isActive, isPlaying, positionMs, onPlay, onPause
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function Timeline({ durationMs, inMs, outMs, positionMs, onSeek, onInChange, onOutChange }: {
+  durationMs: number | null;
+  inMs: number | null;
+  outMs: number | null;
+  positionMs: number | null;
+  onSeek: (ms: number) => void;
+  onInChange: (ms: number | null) => void;
+  onOutChange: (ms: number | null) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [dragging, setDragging] = useState<'in' | 'out' | null>(null);
+  const [dragMs, setDragMs] = useState(0);
+
+  const msFromClientX = useCallback((clientX: number) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || !durationMs) return 0;
+    const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return Math.round(frac * durationMs);
+  }, [durationMs]);
+
+  useEffect(() => {
+    if (!dragging) return;
+    function handleMove(e: PointerEvent) {
+      setDragMs(msFromClientX(e.clientX));
+    }
+    function handleUp(e: PointerEvent) {
+      const ms = msFromClientX(e.clientX);
+      if (dragging === 'in') onInChange(ms);
+      else onOutChange(ms);
+      setDragging(null);
+    }
+    window.addEventListener('pointermove', handleMove);
+    window.addEventListener('pointerup', handleUp);
+    return () => {
+      window.removeEventListener('pointermove', handleMove);
+      window.removeEventListener('pointerup', handleUp);
+    };
+  }, [dragging, msFromClientX, onInChange, onOutChange]);
+
+  if (!durationMs) {
+    return (
+      <div style={{ fontSize: 11, color: 'var(--text3)', textAlign: 'center', padding: '10px 0' }}>
+        Carregant durada de la cançó…
+      </div>
+    );
+  }
+
+  const liveInMs = dragging === 'in' ? dragMs : inMs;
+  const liveOutMs = dragging === 'out' ? dragMs : outMs;
+  const inPct = liveInMs != null ? Math.max(0, Math.min(100, (liveInMs / durationMs) * 100)) : null;
+  const outPct = liveOutMs != null ? Math.max(0, Math.min(100, (liveOutMs / durationMs) * 100)) : null;
+  const posPct = positionMs != null ? Math.max(0, Math.min(100, (positionMs / durationMs) * 100)) : null;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div
+        ref={trackRef}
+        onClick={e => onSeek(msFromClientX(e.clientX))}
+        style={{
+          position: 'relative', height: 28, borderRadius: 6,
+          background: 'rgba(255,255,255,0.05)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          cursor: 'pointer', userSelect: 'none',
+        }}
+      >
+        {/* IN -> OUT range */}
+        {inPct != null && outPct != null && outPct > inPct && (
+          <div style={{
+            position: 'absolute', top: 0, bottom: 0,
+            left: `${inPct}%`, width: `${outPct - inPct}%`,
+            background: 'rgba(29,185,84,0.10)',
+          }} />
+        )}
+        {/* Playback position */}
+        {posPct != null && (
+          <div style={{
+            position: 'absolute', top: 0, bottom: 0, width: 2,
+            left: `${posPct}%`, background: '#1DB954',
+            transition: dragging ? 'none' : 'left 0.4s linear',
+            boxShadow: '0 0 6px rgba(29,185,84,0.8)',
+          }} />
+        )}
+        {/* IN handle */}
+        {inPct != null && (
+          <div
+            onPointerDown={e => { e.stopPropagation(); setDragMs(liveInMs ?? 0); setDragging('in'); }}
+            title="Arrossega per ajustar IN"
+            style={{
+              position: 'absolute', top: -3, bottom: -3, width: 8, marginLeft: -4,
+              left: `${inPct}%`, background: '#f0a500', borderRadius: 3,
+              cursor: 'ew-resize', zIndex: 2,
+            }}
+          />
+        )}
+        {/* OUT handle */}
+        {outPct != null && (
+          <div
+            onPointerDown={e => { e.stopPropagation(); setDragMs(liveOutMs ?? 0); setDragging('out'); }}
+            title="Arrossega per ajustar OUT"
+            style={{
+              position: 'absolute', top: -3, bottom: -3, width: 8, marginLeft: -4,
+              left: `${outPct}%`, background: '#a78bfa', borderRadius: 3,
+              cursor: 'ew-resize', zIndex: 2,
+            }}
+          />
+        )}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, fontFamily: 'var(--font-mono)', color: 'var(--text3)' }}>
+        <span>0:00</span>
+        {dragging && (
+          <span style={{ color: dragging === 'in' ? '#f0a500' : '#a78bfa', fontWeight: 600 }}>
+            {dragging === 'in' ? 'IN' : 'OUT'}: {formatMs(dragMs)}
+          </span>
+        )}
+        <span>{formatMs(durationMs)}</span>
+      </div>
     </div>
   );
 }

@@ -142,6 +142,15 @@ export async function seekTo(position_ms: number) {
   await api('PUT', `/me/player/seek?position_ms=${Math.round(position_ms)}`, undefined);
 }
 
+export async function getTrackDuration(uri: string): Promise<number | null> {
+  const id = uri.split(':').pop();
+  if (!id) return null;
+  try {
+    const data = await api('GET', `/tracks/${id}`);
+    return data?.duration_ms ?? null;
+  } catch { return null; }
+}
+
 export async function getPlaybackState(): Promise<{ position_ms: number; is_playing: boolean } | null> {
   const data = await api('GET', '/me/player');
   if (!data) return null;
