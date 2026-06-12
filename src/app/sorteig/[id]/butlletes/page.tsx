@@ -257,8 +257,8 @@ export default function ButlletesPage() {
             <p style={{ fontSize: 13, fontWeight: 700 }}>Mode pagament</p>
             <p style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, maxWidth: 320 }}>
               {sorteig?.payment_mode
-                ? 'El venedor genera un QR únic per butlleta. Un cop escanejat, desapareix.'
-                : 'Tothom escaneja el mateix QR i s\'autogeneren butlletes per dispositiu.'}
+                ? 'A més del QR públic, el venedor pot generar un QR únic per butlleta. Un cop escanejat, desapareix.'
+                : 'El QR públic genera butlletes gratuïtes i autogenerades per dispositiu.'}
             </p>
           </div>
           <button
@@ -329,53 +329,51 @@ export default function ButlletesPage() {
           </div>
         </div>
 
-        {/* QR Code - mode free */}
-        {!sorteig?.payment_mode && (
-          <div style={{
-            background: '#161622', borderRadius: 16,
-            border: '1px solid rgba(255,255,255,0.07)', padding: 16,
-            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+        {/* QR Code - públic (sempre disponible, encara que hi hagi mode pagament) */}
+        <div style={{
+          background: '#161622', borderRadius: 16,
+          border: '1px solid rgba(255,255,255,0.07)', padding: 16,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+        }}>
+          <p style={{
+            fontSize: 10, fontWeight: 700, color: 'var(--text3)',
+            textTransform: 'uppercase', letterSpacing: '0.1em',
           }}>
-            <p style={{
-              fontSize: 10, fontWeight: 700, color: 'var(--text3)',
-              textTransform: 'uppercase', letterSpacing: '0.1em',
-            }}>
-              Codi QR per als jugadors
-            </p>
+            Codi QR públic
+          </p>
 
-            <div style={{
-              background: '#161622', borderRadius: 12,
-              padding: 16, border: '2px solid rgba(255,255,255,0.1)',
-            }}>
-              <canvas ref={canvasRef} />
-            </div>
-
-            <p style={{ fontSize: 12, color: 'var(--text2)', textAlign: 'center' }}>
-              Escaneja per obtenir una butlleta
-            </p>
-
-            <div style={{
-              background: 'rgba(255,255,255,0.04)',
-              borderRadius: 8, padding: '8px 14px',
-              fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text3)',
-              wordBreak: 'break-all',
-            }}>
-              {qrUrl}
-            </div>
-
-            <button
-              onClick={() => navigator.clipboard.writeText(qrUrl)}
-              className="btn-interact"
-              style={{
-                padding: '8px 18px', borderRadius: 8,
-                fontSize: 12, fontWeight: 600,
-                background: 'rgba(255,255,255,0.07)', color: 'var(--text2)',
-              }}
-            >
-              Copiar URL
-            </button>
+          <div style={{
+            background: '#161622', borderRadius: 12,
+            padding: 16, border: '2px solid rgba(255,255,255,0.1)',
+          }}>
+            <canvas ref={canvasRef} />
           </div>
-        )}
+
+          <p style={{ fontSize: 12, color: 'var(--text2)', textAlign: 'center' }}>
+            Escaneja per obtenir una butlleta gratuïta i autogenerada
+          </p>
+
+          <div style={{
+            background: 'rgba(255,255,255,0.04)',
+            borderRadius: 8, padding: '8px 14px',
+            fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text3)',
+            wordBreak: 'break-all',
+          }}>
+            {qrUrl}
+          </div>
+
+          <button
+            onClick={() => navigator.clipboard.writeText(qrUrl)}
+            className="btn-interact"
+            style={{
+              padding: '8px 18px', borderRadius: 8,
+              fontSize: 12, fontWeight: 600,
+              background: 'rgba(255,255,255,0.07)', color: 'var(--text2)',
+            }}
+          >
+            Copiar URL
+          </button>
+        </div>
 
         {/* QR Code - mode pagament */}
         {sorteig?.payment_mode && (

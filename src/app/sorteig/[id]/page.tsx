@@ -1,11 +1,11 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { hasToken, playTrack, pausePlayback, resumePlayback, seekTo, getPlaybackState, getTrackDuration, getTracksInfo } from '@/lib/spotify';
+import { hasToken, playTrack, pausePlayback, seekTo, getPlaybackState, getTrackDuration, getTracksInfo } from '@/lib/spotify';
 import {
   fetchSorteig, fetchSorteigItems, updateSorteigItem, updateSorteig, saveSongTimecodes,
   insertSorteigItems, deleteSorteigItem, lookupSongTimecodes, fetchTicketsForSorteig,
-  type DbSorteig, type DbSorteigItem, type DbTicket,
+  type DbSorteig, type DbSorteigItem, type DbTicket, type PlayState,
 } from '@/lib/supabase';
 
 function formatMs(ms: number): string {
@@ -26,11 +26,15 @@ function parseSpotifyUri(raw: string): string | null {
   return null;
 }
 
-function computeLineAndBingo(ticket: DbTicket, gridCols: number): { line: boolean; bingo: boolean } {
-  const total = ticket.song_positions?.length ?? 0;
+// Calcula línia/bingo a partir de les cançons que REALMENT han sonat
+// (playedPositions = índexs a `items` ja sortejats), no del que marca el jugador.
+function computeLineAndBingo(ticket: DbTicket, gridCols: number, playedPositions: Set<number>): { line: boolean; bingo: boolean } {
+  const positions = ticket.song_positions ?? [];
+  const total = positions.length;
   if (total === 0 || gridCols <= 0) return { line: false, bingo: false };
-  const marked = new Set(ticket.marked ?? []);
-  const bingo = marked.size === total;
+  const achieved = new Set<number>();
+  positions.forEach((pos, idx) => { if (playedPositions.has(pos)) achieved.add(idx); });
+  const bingo = achieved.size === total;
   const rows = Math.ceil(total / gridCols);
 
   let line = false;
@@ -38,7 +42,7 @@ function computeLineAndBingo(ticket: DbTicket, gridCols: number): { line: boolea
     let full = true;
     for (let c = 0; c < gridCols; c++) {
       const idx = r * gridCols + c;
-      if (idx >= total || !marked.has(idx)) { full = false; break; }
+      if (idx >= total || !achieved.has(idx)) { full = false; break; }
     }
     if (full) line = true;
   }
@@ -46,7 +50,7 @@ function computeLineAndBingo(ticket: DbTicket, gridCols: number): { line: boolea
     let full = true;
     for (let r = 0; r < rows; r++) {
       const idx = r * gridCols + c;
-      if (idx >= total || !marked.has(idx)) { full = false; break; }
+      if (idx >= total || !achieved.has(idx)) { full = false; break; }
     }
     if (full) line = true;
   }
@@ -108,6 +112,29 @@ export default function SorteigPage() {
   const pendingIndexRef = useRef<number | null>(null);
   const confirmedSecRef = useRef(0);
   const committedRef = useRef(false);
+  const currentPositionRef = useRef(0);
+  const playedIndicesRef = useRef<number[]>([]);
+
+  function addPlayedIndex(idx: number) {
+    if (!playedIndicesRef.current.includes(idx)) {
+      playedIndicesRef.current = [...playedIndicesRef.current, idx];
+      setPlayedIndices(playedIndicesRef.current);
+    }
+  }
+
+  async function persistPlayState(overrides: Partial<PlayState> = {}) {
+    const state: PlayState = {
+      playedIndices: playedIndicesRef.current,
+      currentIndex: pendingIndexRef.current,
+      positionMs: currentPositionRef.current,
+      isPlaying: false,
+      autoMode: autoModeRef.current,
+      ...overrides,
+    };
+    try {
+      await updateSorteig(id, { play_state: state });
+    } catch { /* ignore */ }
+  }
 
   // Avisos de línia/bingo
   const [toasts, setToasts] = useState<{ id: string; text: string; kind: 'line' | 'bingo' }[]>([]);
@@ -122,6 +149,39 @@ export default function SorteigPage() {
     const [s, it] = await Promise.all([fetchSorteig(id), fetchSorteigItems(id)]);
     setSorteig(s);
     setItems(it);
+
+    const ps = s?.play_state;
+    if (ps) {
+      playedIndicesRef.current = ps.playedIndices ?? [];
+      setPlayedIndices(playedIndicesRef.current);
+      autoModeRef.current = ps.autoMode ?? true;
+      setAutoMode(autoModeRef.current);
+
+      if (ps.currentIndex != null && it[ps.currentIndex]) {
+        const item = it[ps.currentIndex];
+        const inMs = item.in_ms ?? 30000;
+        const outMs = item.out_ms ?? 60000;
+        const position = ps.positionMs ?? inMs;
+
+        setCurrentItem(item);
+        pendingIndexRef.current = ps.currentIndex;
+        currentPositionRef.current = position;
+        inMsRef.current = inMs;
+        outMsRef.current = outMs;
+        durationMsRef.current = null;
+        committedRef.current = playedIndicesRef.current.includes(ps.currentIndex);
+        confirmedSecRef.current = committedRef.current ? Math.min(5, (outMs - inMs) / 1000) : 0;
+
+        const total = Math.max(1, (outMs - inMs) / 1000);
+        totalSecRef.current = total;
+        setTotalSec(total);
+        const remaining = Math.max(0, (outMs - position) / 1000);
+        localCountdownRef.current = remaining;
+        setCountdown(Math.ceil(remaining));
+        setCountdownFraction(total > 0 ? Math.max(0, Math.min(1, remaining / total)) : 0);
+      }
+    }
+
     setLoading(false);
   }
 
@@ -135,12 +195,13 @@ export default function SorteigPage() {
   useEffect(() => {
     if (tab !== 'play' || !sorteig) return;
     const gridCols = sorteig.grid_cols || 3;
+    const playedSet = new Set(playedIndices);
 
     async function checkTickets() {
       const tickets = await fetchTicketsForSorteig(id);
       const newToasts: { id: string; text: string; kind: 'line' | 'bingo' }[] = [];
       for (const t of tickets) {
-        const status = computeLineAndBingo(t, gridCols);
+        const status = computeLineAndBingo(t, gridCols, playedSet);
         const prev = ticketStatusRef.current.get(t.id) ?? { line: false, bingo: false };
         const label = t.card_number != null ? `Targeta #${t.card_number}` : `Targeta ${t.id.slice(0, 4)}`;
         if (status.bingo && !prev.bingo) {
@@ -163,7 +224,7 @@ export default function SorteigPage() {
     return () => {
       if (ticketPollRef.current) { clearInterval(ticketPollRef.current); ticketPollRef.current = null; }
     };
-  }, [tab, sorteig, id]);
+  }, [tab, sorteig, id, playedIndices]);
 
   function startEditPolling(songUri: string, outLimit?: number) {
     stopPolling();
@@ -186,8 +247,6 @@ export default function SorteigPage() {
     if (!hasToken()) { router.push('/'); return; }
     try {
       await playTrack(uri, startMs);
-      // Spotify de vegades ignora el position_ms inicial: forcem un re-seek
-      setTimeout(() => { seekTo(startMs).catch(() => {}); }, 400);
       setActiveUri(uri);
       setIsPlaying(true);
       startEditPolling(uri);
@@ -213,8 +272,6 @@ export default function SorteigPage() {
     if (item.in_ms == null || item.out_ms == null) return;
     try {
       await playTrack(item.uri, item.in_ms);
-      // Spotify de vegades ignora el position_ms inicial: forcem un re-seek
-      setTimeout(() => { seekTo(item.in_ms!).catch(() => {}); }, 400);
       setActiveUri(item.uri);
       setIsPlaying(true);
       startEditPolling(item.uri, item.out_ms);
@@ -344,6 +401,7 @@ export default function SorteigPage() {
         const state = await getPlaybackState();
         if (state) {
           if (state.duration_ms != null) durationMsRef.current = state.duration_ms;
+          currentPositionRef.current = state.position_ms;
           localCountdownRef.current = Math.max(0, (getEndMs() - state.position_ms) / 1000);
           if (state.is_playing) confirmedSecRef.current += 0.5;
         }
@@ -359,8 +417,8 @@ export default function SorteigPage() {
       const minPlayed = Math.min(5, total);
       if (!committedRef.current && pendingIndexRef.current != null && confirmedSecRef.current >= minPlayed) {
         committedRef.current = true;
-        const idx = pendingIndexRef.current;
-        setPlayedIndices(prev => prev.includes(idx) ? prev : [...prev, idx]);
+        addPlayedIndex(pendingIndexRef.current);
+        persistPlayState({ isPlaying: true });
       }
 
       // No avancem fins que no s'hagi confirmat reproducció real, per evitar
@@ -379,6 +437,7 @@ export default function SorteigPage() {
     const next = !autoMode;
     setAutoMode(next);
     autoModeRef.current = next;
+    persistPlayState({ isPlaying });
     if (next && isPlaying) {
       // Si ja hem passat el punt OUT, salta a la següent immediatament
       getPlaybackState().then(state => {
@@ -400,15 +459,18 @@ export default function SorteigPage() {
     // la bossa però l'excloem d'aquest sorteig per evitar repetir-la de seguida.
     const prevIdx = pendingIndexRef.current;
     let rem = customRemaining ?? remainingItems;
-    if (prevIdx != null && !committedRef.current) {
-      const threshold = Math.min(5, totalSecRef.current || 5);
-      if (confirmedSecRef.current >= threshold) {
-        setPlayedIndices(prev => prev.includes(prevIdx) ? prev : [...prev, prevIdx]);
-      } else {
-        const skipped = items[prevIdx];
-        const filtered = rem.filter(it => it !== skipped);
-        if (filtered.length > 0) rem = filtered;
+    if (prevIdx != null) {
+      if (!committedRef.current) {
+        const threshold = Math.min(5, totalSecRef.current || 5);
+        if (confirmedSecRef.current >= threshold) {
+          addPlayedIndex(prevIdx);
+        }
       }
+      // Sempre excloem la cançó anterior d'aquest sorteig, encara que
+      // `remainingItems` no s'hagi actualitzat encara (evita repetir-la).
+      const prevSong = items[prevIdx];
+      const filtered = rem.filter(it => it !== prevSong);
+      if (filtered.length > 0) rem = filtered;
     }
 
     if (rem.length === 0) {
@@ -416,6 +478,8 @@ export default function SorteigPage() {
       setCurrentItem(null);
       setCountdown(null);
       pendingIndexRef.current = null;
+      currentPositionRef.current = 0;
+      persistPlayState({ currentIndex: null, positionMs: 0, isPlaying: false });
       return;
     }
     const idx = Math.floor(Math.random() * rem.length);
@@ -432,6 +496,7 @@ export default function SorteigPage() {
     outMsRef.current = outMs;
     inMsRef.current = inMs;
     durationMsRef.current = null;
+    currentPositionRef.current = inMs;
     const sec = Math.max(1, (outMs - inMs) / 1000);
     setTotalSec(sec);
     totalSecRef.current = sec;
@@ -441,11 +506,10 @@ export default function SorteigPage() {
 
     try {
       await playTrack(item.uri, inMs);
-      // Spotify de vegades ignora el position_ms inicial: forcem un re-seek
-      setTimeout(() => { seekTo(inMs).catch(() => {}); }, 400);
       setActiveUri(item.uri);
       setIsPlaying(true);
       startBingoPolling();
+      persistPlayState({ isPlaying: true });
     } catch { setIsPlaying(false); }
   }
 
@@ -454,21 +518,35 @@ export default function SorteigPage() {
       stopPolling();
       await pausePlayback().catch(() => {});
       setIsPlaying(false);
+      persistPlayState({ isPlaying: false });
       return;
     }
     if (currentItem) {
       try {
-        await resumePlayback();
+        await playTrack(currentItem.uri, currentPositionRef.current);
         setIsPlaying(true);
         startBingoPolling();
+        persistPlayState({ isPlaying: true });
       } catch { /* ignore */ }
       return;
     }
     await playNextBingo();
   }
 
+  async function handleNavigate(path: string) {
+    if (tab === 'play' && (currentItem || playedIndicesRef.current.length > 0)) {
+      try {
+        const state = await getPlaybackState();
+        if (state) currentPositionRef.current = state.position_ms;
+      } catch { /* ignore */ }
+      await persistPlayState({ isPlaying });
+    }
+    router.push(path);
+  }
+
   function handleBingoReset() {
     stopPolling();
+    playedIndicesRef.current = [];
     setPlayedIndices([]);
     setCurrentItem(null);
     setCountdown(null);
@@ -477,6 +555,8 @@ export default function SorteigPage() {
     pendingIndexRef.current = null;
     confirmedSecRef.current = 0;
     committedRef.current = false;
+    currentPositionRef.current = 0;
+    persistPlayState({ playedIndices: [], currentIndex: null, positionMs: 0, isPlaying: false });
   }
 
   if (loading) {
@@ -541,14 +621,14 @@ export default function SorteigPage() {
         padding: '12px 20px',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-          <button onClick={() => router.push('/')} className="btn-ghost" style={{ color: 'var(--text2)', fontSize: 14 }}>
+          <button onClick={() => handleNavigate('/')} className="btn-ghost" style={{ color: 'var(--text2)', fontSize: 14 }}>
             ← Inici
           </button>
           <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 700 }}>
             {sorteig.name}
           </h1>
           <button
-            onClick={() => router.push(`/sorteig/${id}/butlletes`)}
+            onClick={() => handleNavigate(`/sorteig/${id}/butlletes`)}
             className="btn-interact"
             style={{
               padding: '6px 14px', borderRadius: 8,

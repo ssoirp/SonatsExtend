@@ -15,6 +15,14 @@ export interface DbSong {
   out_bingo: number | null;
 }
 
+export interface PlayState {
+  playedIndices: number[];
+  currentIndex: number | null;
+  positionMs: number;
+  isPlaying: boolean;
+  autoMode: boolean;
+}
+
 export interface DbSorteig {
   id: string;
   user_id: string;
@@ -29,6 +37,7 @@ export interface DbSorteig {
   grid_rows: number;
   grid_cols: number;
   payment_mode: boolean;
+  play_state: PlayState | null;
   created_at: string;
   updated_at: string;
 }
@@ -127,7 +136,7 @@ export async function createSorteig(params: {
   return data;
 }
 
-export async function updateSorteig(id: string, updates: Partial<Pick<DbSorteig, 'name' | 'grid_rows' | 'grid_cols' | 'n' | 'payment_mode'>>) {
+export async function updateSorteig(id: string, updates: Partial<Pick<DbSorteig, 'name' | 'grid_rows' | 'grid_cols' | 'n' | 'payment_mode' | 'play_state'>>) {
   const { error } = await supabase
     .from('sorteigs')
     .update({ ...updates, updated_at: new Date().toISOString() })
