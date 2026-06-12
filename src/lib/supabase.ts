@@ -28,6 +28,7 @@ export interface DbSorteig {
   share_code: string | null;
   grid_rows: number;
   grid_cols: number;
+  payment_mode: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -54,6 +55,9 @@ export interface DbTicket {
   locked: boolean;
   marked: number[];
   song_positions: number[];
+  code: string | null;
+  card_number: number | null;
+  claimed_at: string | null;
   created_at: string;
 }
 
@@ -123,7 +127,7 @@ export async function createSorteig(params: {
   return data;
 }
 
-export async function updateSorteig(id: string, updates: Partial<Pick<DbSorteig, 'name' | 'grid_rows' | 'grid_cols' | 'n'>>) {
+export async function updateSorteig(id: string, updates: Partial<Pick<DbSorteig, 'name' | 'grid_rows' | 'grid_cols' | 'n' | 'payment_mode'>>) {
   const { error } = await supabase
     .from('sorteigs')
     .update({ ...updates, updated_at: new Date().toISOString() })
@@ -235,4 +239,88 @@ export async function updateTicketMarked(ticketId: string, marked: number[]) {
     .update({ marked })
     .eq('id', ticketId);
   if (error) throw error;
+}
+
+function generateTicketCode(): string {
+  return Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 6);
+}
+
+export async function createPaymentTicket(sorteigId: string, songPositions: number[], gridRows: number, gridCols: number): Promise<DbTicket> {
+  const { data: last } = await supabase
+    .from('tickets')
+    .select('card_number')
+    .eq('sorteig_id', sorteigId)
+    .not('card_number', 'is', null)
+    .order('card_number', { ascending: false })
+    .limit(1);
+  const cardNumber = (last?.[0]?.card_number ?? 0) + 1;
+
+  const { data, error } = await supabase
+    .from('tickets')
+    .insert({
+      sorteig_id: sorteigId,
+      seed: Math.random().toString(36).slice(2),
+      locked: false,
+      marked: [],
+      song_positions: songPositions,
+      code: generateTicketCode(),
+      card_number: cardNumber,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function fetchUnclaimedPaymentTicket(sorteigId: string): Promise<DbTicket | null> {
+  const { data, error } = await supabase
+    .from('tickets')
+    .select('*')
+    .eq('sorteig_id', sorteigId)
+    .is('claimed_at', null)
+    .not('code', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (error || !data || data.length === 0) return null;
+  return data[0];
+}
+
+export async function fetchTicketById(ticketId: string): Promise<DbTicket | null> {
+  const { data, error } = await supabase
+    .from('tickets')
+    .select('*')
+    .eq('id', ticketId)
+    .single();
+  if (error) return null;
+  return data;
+}
+
+export async function fetchTicketByCode(code: string): Promise<DbTicket | null> {
+  const { data, error } = await supabase
+    .from('tickets')
+    .select('*')
+    .eq('code', code)
+    .single();
+  if (error) return null;
+  return data;
+}
+
+export async function claimTicket(ticketId: string, deviceId: string): Promise<DbTicket> {
+  const { data, error } = await supabase
+    .from('tickets')
+    .update({ claimed_at: new Date().toISOString(), device_id: deviceId })
+    .eq('id', ticketId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function fetchTicketsForSorteig(sorteigId: string): Promise<DbTicket[]> {
+  const { data, error } = await supabase
+    .from('tickets')
+    .select('*')
+    .eq('sorteig_id', sorteigId);
+  if (error) return [];
+  return data ?? [];
 }

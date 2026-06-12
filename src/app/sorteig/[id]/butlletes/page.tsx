@@ -2,7 +2,25 @@
 import { useEffect, useState, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import QRCode from 'qrcode';
-import { fetchSorteig, fetchSorteigItems, updateSorteig, type DbSorteig, type DbSorteigItem } from '@/lib/supabase';
+import {
+  fetchSorteig, fetchSorteigItems, updateSorteig,
+  createPaymentTicket, fetchUnclaimedPaymentTicket, fetchTicketById,
+  type DbSorteig, type DbSorteigItem, type DbTicket,
+} from '@/lib/supabase';
+
+function pickCardPositions(items: DbSorteigItem[], cellCount: number): number[] {
+  const configuredIdx = items
+    .map((it, i) => ({ it, i }))
+    .filter(x => x.it.in_ms != null && x.it.out_ms != null)
+    .map(x => x.i);
+  const pool = configuredIdx.length >= cellCount ? configuredIdx : items.map((_, i) => i);
+  const shuffled = [...pool];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled.slice(0, Math.min(cellCount, shuffled.length));
+}
 
 const GRID_OPTIONS = [
   { rows: 3, cols: 3, label: '3×3 (9)' },
@@ -27,6 +45,13 @@ export default function ButlletesPage() {
   const [qrUrl, setQrUrl] = useState('');
   const [saved, setSaved] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Payment mode
+  const [togglingPayment, setTogglingPayment] = useState(false);
+  const [paymentTicket, setPaymentTicket] = useState<DbTicket | null>(null);
+  const [generatingTicket, setGeneratingTicket] = useState(false);
+  const paymentCanvasRef = useRef<HTMLCanvasElement>(null);
+  const paymentPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     loadData();
@@ -57,6 +82,68 @@ export default function ButlletesPage() {
       });
     }
   }, [sorteig?.share_code, loading]);
+
+  // Resume any unclaimed payment ticket on load
+  useEffect(() => {
+    if (!sorteig?.payment_mode) return;
+    fetchUnclaimedPaymentTicket(id).then(t => { if (t) setPaymentTicket(t); });
+  }, [sorteig?.payment_mode, id]);
+
+  // Render the payment ticket QR
+  useEffect(() => {
+    if (!paymentTicket || paymentTicket.claimed_at) return;
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const url = `${origin}/b/${paymentTicket.code}`;
+    if (paymentCanvasRef.current) {
+      QRCode.toCanvas(paymentCanvasRef.current, url, {
+        width: 240,
+        margin: 2,
+        color: { dark: '#f0f0fa', light: '#161622' },
+      });
+    }
+  }, [paymentTicket]);
+
+  // Poll until the current payment ticket gets scanned
+  useEffect(() => {
+    if (paymentPollRef.current) { clearInterval(paymentPollRef.current); paymentPollRef.current = null; }
+    if (!paymentTicket || paymentTicket.claimed_at) return;
+    paymentPollRef.current = setInterval(async () => {
+      const t = await fetchTicketById(paymentTicket.id);
+      if (t?.claimed_at) {
+        setPaymentTicket(t);
+      }
+    }, 2000);
+    return () => {
+      if (paymentPollRef.current) { clearInterval(paymentPollRef.current); paymentPollRef.current = null; }
+    };
+  }, [paymentTicket]);
+
+  async function handleTogglePaymentMode() {
+    if (!sorteig) return;
+    const next = !sorteig.payment_mode;
+    setTogglingPayment(true);
+    try {
+      await updateSorteig(id, { payment_mode: next });
+      setSorteig({ ...sorteig, payment_mode: next });
+      if (!next) setPaymentTicket(null);
+    } catch (err) {
+      alert('Error canviant el mode: ' + (err as Error).message);
+    }
+    setTogglingPayment(false);
+  }
+
+  async function handleGenerateTicket() {
+    if (!sorteig) return;
+    setGeneratingTicket(true);
+    try {
+      const positions = pickCardPositions(items, gridRows * gridCols);
+      const t = await createPaymentTicket(id, positions, gridRows, gridCols);
+      setPaymentTicket(t);
+    } catch (err) {
+      alert('Error generant la butlleta: ' + (err as Error).message);
+    }
+    setGeneratingTicket(false);
+  }
 
   async function handleSaveGrid() {
     if (!sorteig) return;
@@ -160,6 +247,48 @@ export default function ButlletesPage() {
           </div>
         </div>
 
+        {/* Payment mode toggle */}
+        <div style={{
+          background: '#161622', borderRadius: 16,
+          border: '1px solid rgba(255,255,255,0.07)', padding: 16,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+        }}>
+          <div>
+            <p style={{ fontSize: 13, fontWeight: 700 }}>Mode pagament</p>
+            <p style={{ fontSize: 11, color: 'var(--text3)', marginTop: 4, maxWidth: 320 }}>
+              {sorteig?.payment_mode
+                ? 'El venedor genera un QR únic per butlleta. Un cop escanejat, desapareix.'
+                : 'Tothom escaneja el mateix QR i s\'autogeneren butlletes per dispositiu.'}
+            </p>
+          </div>
+          <button
+            onClick={handleTogglePaymentMode}
+            disabled={togglingPayment}
+            className="btn-interact"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '8px 14px', borderRadius: 999, flexShrink: 0,
+              background: sorteig?.payment_mode ? 'rgba(29,185,84,0.12)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${sorteig?.payment_mode ? 'rgba(29,185,84,0.3)' : 'rgba(255,255,255,0.1)'}`,
+              color: sorteig?.payment_mode ? '#1DB954' : 'var(--text3)',
+              fontSize: 12, fontWeight: 600,
+            }}
+          >
+            <span style={{
+              width: 28, height: 16, borderRadius: 999, position: 'relative', flexShrink: 0,
+              background: sorteig?.payment_mode ? '#1DB954' : 'rgba(255,255,255,0.15)',
+              transition: 'background 0.2s',
+            }}>
+              <span style={{
+                position: 'absolute', top: 2, left: sorteig?.payment_mode ? 14 : 2,
+                width: 12, height: 12, borderRadius: '50%', background: '#fff',
+                transition: 'left 0.2s',
+              }} />
+            </span>
+            {sorteig?.payment_mode ? 'ON' : 'OFF'}
+          </button>
+        </div>
+
         {/* Preview */}
         <div style={{
           background: '#161622', borderRadius: 16,
@@ -200,51 +329,139 @@ export default function ButlletesPage() {
           </div>
         </div>
 
-        {/* QR Code */}
-        <div style={{
-          background: '#161622', borderRadius: 16,
-          border: '1px solid rgba(255,255,255,0.07)', padding: 16,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
-        }}>
-          <p style={{
-            fontSize: 10, fontWeight: 700, color: 'var(--text3)',
-            textTransform: 'uppercase', letterSpacing: '0.1em',
-          }}>
-            Codi QR per als jugadors
-          </p>
-
+        {/* QR Code - mode free */}
+        {!sorteig?.payment_mode && (
           <div style={{
-            background: '#161622', borderRadius: 12,
-            padding: 16, border: '2px solid rgba(255,255,255,0.1)',
+            background: '#161622', borderRadius: 16,
+            border: '1px solid rgba(255,255,255,0.07)', padding: 16,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
           }}>
-            <canvas ref={canvasRef} />
+            <p style={{
+              fontSize: 10, fontWeight: 700, color: 'var(--text3)',
+              textTransform: 'uppercase', letterSpacing: '0.1em',
+            }}>
+              Codi QR per als jugadors
+            </p>
+
+            <div style={{
+              background: '#161622', borderRadius: 12,
+              padding: 16, border: '2px solid rgba(255,255,255,0.1)',
+            }}>
+              <canvas ref={canvasRef} />
+            </div>
+
+            <p style={{ fontSize: 12, color: 'var(--text2)', textAlign: 'center' }}>
+              Escaneja per obtenir una butlleta
+            </p>
+
+            <div style={{
+              background: 'rgba(255,255,255,0.04)',
+              borderRadius: 8, padding: '8px 14px',
+              fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text3)',
+              wordBreak: 'break-all',
+            }}>
+              {qrUrl}
+            </div>
+
+            <button
+              onClick={() => navigator.clipboard.writeText(qrUrl)}
+              className="btn-interact"
+              style={{
+                padding: '8px 18px', borderRadius: 8,
+                fontSize: 12, fontWeight: 600,
+                background: 'rgba(255,255,255,0.07)', color: 'var(--text2)',
+              }}
+            >
+              Copiar URL
+            </button>
           </div>
+        )}
 
-          <p style={{ fontSize: 12, color: 'var(--text2)', textAlign: 'center' }}>
-            Escaneja per obtenir una butlleta
-          </p>
-
+        {/* QR Code - mode pagament */}
+        {sorteig?.payment_mode && (
           <div style={{
-            background: 'rgba(255,255,255,0.04)',
-            borderRadius: 8, padding: '8px 14px',
-            fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text3)',
-            wordBreak: 'break-all',
+            background: '#161622', borderRadius: 16,
+            border: '1px solid rgba(255,255,255,0.07)', padding: 16,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12,
           }}>
-            {qrUrl}
-          </div>
+            <p style={{
+              fontSize: 10, fontWeight: 700, color: 'var(--text3)',
+              textTransform: 'uppercase', letterSpacing: '0.1em',
+            }}>
+              Butlleta de pagament
+            </p>
 
-          <button
-            onClick={() => navigator.clipboard.writeText(qrUrl)}
-            className="btn-interact"
-            style={{
-              padding: '8px 18px', borderRadius: 8,
-              fontSize: 12, fontWeight: 600,
-              background: 'rgba(255,255,255,0.07)', color: 'var(--text2)',
-            }}
-          >
-            Copiar URL
-          </button>
-        </div>
+            {paymentTicket && !paymentTicket.claimed_at ? (
+              <>
+                <div style={{
+                  background: '#161622', borderRadius: 12,
+                  padding: 16, border: '2px solid rgba(255,255,255,0.1)',
+                }}>
+                  <canvas ref={paymentCanvasRef} />
+                </div>
+                <p style={{ fontSize: 14, fontWeight: 700, color: '#1DB954' }}>
+                  Targeta #{paymentTicket.card_number}
+                </p>
+                <p style={{ fontSize: 12, color: 'var(--text2)', textAlign: 'center' }}>
+                  Dona aquest QR a la persona un cop hagi pagat.<br />Desapareixerà quan l&apos;escanegi.
+                </p>
+                <p style={{ fontSize: 11, color: 'var(--text3)' }}>
+                  ⏳ Esperant escaneig...
+                </p>
+              </>
+            ) : paymentTicket?.claimed_at ? (
+              <>
+                <div style={{
+                  width: 240, height: 240, borderRadius: 12,
+                  border: '2px solid rgba(29,185,84,0.3)', background: 'rgba(29,185,84,0.08)',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
+                }}>
+                  <span style={{ fontSize: 40 }}>✓</span>
+                  <p style={{ fontSize: 14, fontWeight: 700, color: '#1DB954' }}>
+                    Targeta #{paymentTicket.card_number} bescanviada
+                  </p>
+                </div>
+                <button
+                  onClick={handleGenerateTicket}
+                  disabled={generatingTicket || !hasSufficientSongs}
+                  className="btn-interact"
+                  style={{
+                    padding: '10px 20px', borderRadius: 10,
+                    fontSize: 13, fontWeight: 700,
+                    background: '#1DB954', color: '#000',
+                    opacity: generatingTicket || !hasSufficientSongs ? 0.5 : 1,
+                  }}
+                >
+                  {generatingTicket ? 'Generant...' : 'Generar següent butlleta'}
+                </button>
+              </>
+            ) : (
+              <>
+                <p style={{ fontSize: 12, color: 'var(--text2)', textAlign: 'center', maxWidth: 320 }}>
+                  Quan algú hagi pagat, prem el botó per generar el seu QR d&apos;un sol ús.
+                </p>
+                <button
+                  onClick={handleGenerateTicket}
+                  disabled={generatingTicket || !hasSufficientSongs}
+                  className="btn-interact"
+                  style={{
+                    padding: '10px 20px', borderRadius: 10,
+                    fontSize: 13, fontWeight: 700,
+                    background: '#1DB954', color: '#000',
+                    opacity: generatingTicket || !hasSufficientSongs ? 0.5 : 1,
+                  }}
+                >
+                  {generatingTicket ? 'Generant...' : 'Generar QR butlleta'}
+                </button>
+                {!hasSufficientSongs && (
+                  <p style={{ fontSize: 11, color: '#ff6b6b', textAlign: 'center' }}>
+                    Configura {cellCount - configuredSongs.length} cançó(ns) més abans de generar butlletes.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </main>
     </div>
   );

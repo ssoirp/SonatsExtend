@@ -1,11 +1,11 @@
 'use client';
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { hasToken, playTrack, pausePlayback, seekTo, getPlaybackState, getTrackDuration, getTracksInfo } from '@/lib/spotify';
+import { hasToken, playTrack, pausePlayback, resumePlayback, seekTo, getPlaybackState, getTrackDuration, getTracksInfo } from '@/lib/spotify';
 import {
   fetchSorteig, fetchSorteigItems, updateSorteigItem, updateSorteig, saveSongTimecodes,
-  insertSorteigItems, deleteSorteigItem, lookupSongTimecodes,
-  type DbSorteig, type DbSorteigItem,
+  insertSorteigItems, deleteSorteigItem, lookupSongTimecodes, fetchTicketsForSorteig,
+  type DbSorteig, type DbSorteigItem, type DbTicket,
 } from '@/lib/supabase';
 
 function formatMs(ms: number): string {
@@ -24,6 +24,33 @@ function parseSpotifyUri(raw: string): string | null {
   if (m) return `spotify:track:${m[1]}`;
   if (/^[a-zA-Z0-9]{22}$/.test(s)) return `spotify:track:${s}`;
   return null;
+}
+
+function computeLineAndBingo(ticket: DbTicket, gridCols: number): { line: boolean; bingo: boolean } {
+  const total = ticket.song_positions?.length ?? 0;
+  if (total === 0 || gridCols <= 0) return { line: false, bingo: false };
+  const marked = new Set(ticket.marked ?? []);
+  const bingo = marked.size === total;
+  const rows = Math.ceil(total / gridCols);
+
+  let line = false;
+  for (let r = 0; r < rows && !line; r++) {
+    let full = true;
+    for (let c = 0; c < gridCols; c++) {
+      const idx = r * gridCols + c;
+      if (idx >= total || !marked.has(idx)) { full = false; break; }
+    }
+    if (full) line = true;
+  }
+  for (let c = 0; c < gridCols && !line; c++) {
+    let full = true;
+    for (let r = 0; r < rows; r++) {
+      const idx = r * gridCols + c;
+      if (idx >= total || !marked.has(idx)) { full = false; break; }
+    }
+    if (full) line = true;
+  }
+  return { line, bingo };
 }
 
 function parseMsInput(input: string): number | null {
@@ -77,6 +104,15 @@ export default function SorteigPage() {
   const localCountdownRef = useRef(0);
   const totalSecRef = useRef(0);
   const advancingRef = useRef(false);
+  // Confirmació de reproducció real (per evitar salts prematurs i comptar com a "sonada")
+  const pendingIndexRef = useRef<number | null>(null);
+  const confirmedSecRef = useRef(0);
+  const committedRef = useRef(false);
+
+  // Avisos de línia/bingo
+  const [toasts, setToasts] = useState<{ id: string; text: string; kind: 'line' | 'bingo' }[]>([]);
+  const ticketStatusRef = useRef<Map<string, { line: boolean; bingo: boolean }>>(new Map());
+  const ticketPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     loadData();
@@ -94,6 +130,40 @@ export default function SorteigPage() {
   }, []);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
+
+  // Avisos de línia/bingo: comprova periòdicament les butlletes generades
+  useEffect(() => {
+    if (tab !== 'play' || !sorteig) return;
+    const gridCols = sorteig.grid_cols || 3;
+
+    async function checkTickets() {
+      const tickets = await fetchTicketsForSorteig(id);
+      const newToasts: { id: string; text: string; kind: 'line' | 'bingo' }[] = [];
+      for (const t of tickets) {
+        const status = computeLineAndBingo(t, gridCols);
+        const prev = ticketStatusRef.current.get(t.id) ?? { line: false, bingo: false };
+        const label = t.card_number != null ? `Targeta #${t.card_number}` : `Targeta ${t.id.slice(0, 4)}`;
+        if (status.bingo && !prev.bingo) {
+          newToasts.push({ id: `${t.id}-bingo-${Date.now()}`, text: `${label} ha fet BINGO! 🎉`, kind: 'bingo' });
+        } else if (status.line && !prev.line) {
+          newToasts.push({ id: `${t.id}-line-${Date.now()}`, text: `${label} ha fet LÍNIA! 🎵`, kind: 'line' });
+        }
+        ticketStatusRef.current.set(t.id, status);
+      }
+      if (newToasts.length > 0) {
+        setToasts(prev => [...prev, ...newToasts]);
+        for (const toast of newToasts) {
+          setTimeout(() => setToasts(prev => prev.filter(x => x.id !== toast.id)), 8000);
+        }
+      }
+    }
+
+    checkTickets();
+    ticketPollRef.current = setInterval(checkTickets, 4000);
+    return () => {
+      if (ticketPollRef.current) { clearInterval(ticketPollRef.current); ticketPollRef.current = null; }
+    };
+  }, [tab, sorteig, id]);
 
   function startEditPolling(songUri: string, outLimit?: number) {
     stopPolling();
@@ -116,6 +186,8 @@ export default function SorteigPage() {
     if (!hasToken()) { router.push('/'); return; }
     try {
       await playTrack(uri, startMs);
+      // Spotify de vegades ignora el position_ms inicial: forcem un re-seek
+      setTimeout(() => { seekTo(startMs).catch(() => {}); }, 400);
       setActiveUri(uri);
       setIsPlaying(true);
       startEditPolling(uri);
@@ -141,6 +213,8 @@ export default function SorteigPage() {
     if (item.in_ms == null || item.out_ms == null) return;
     try {
       await playTrack(item.uri, item.in_ms);
+      // Spotify de vegades ignora el position_ms inicial: forcem un re-seek
+      setTimeout(() => { seekTo(item.in_ms!).catch(() => {}); }, 400);
       setActiveUri(item.uri);
       setIsPlaying(true);
       startEditPolling(item.uri, item.out_ms);
@@ -271,6 +345,7 @@ export default function SorteigPage() {
         if (state) {
           if (state.duration_ms != null) durationMsRef.current = state.duration_ms;
           localCountdownRef.current = Math.max(0, (getEndMs() - state.position_ms) / 1000);
+          if (state.is_playing) confirmedSecRef.current += 0.5;
         }
       } catch { /* ignore */ }
       const total = Math.max(1, (getEndMs() - inMsRef.current) / 1000);
@@ -278,7 +353,19 @@ export default function SorteigPage() {
       setTotalSec(total);
       setCountdown(Math.ceil(localCountdownRef.current));
       setCountdownFraction(total > 0 ? Math.max(0, Math.min(1, localCountdownRef.current / total)) : 0);
-      if (localCountdownRef.current <= 0 && !advancingRef.current) {
+
+      // Un cop hem confirmat almenys 5s (o tota la durada, si és més curta)
+      // de reproducció real, marquem la cançó com a sonada.
+      const minPlayed = Math.min(5, total);
+      if (!committedRef.current && pendingIndexRef.current != null && confirmedSecRef.current >= minPlayed) {
+        committedRef.current = true;
+        const idx = pendingIndexRef.current;
+        setPlayedIndices(prev => prev.includes(idx) ? prev : [...prev, idx]);
+      }
+
+      // No avancem fins que no s'hagi confirmat reproducció real, per evitar
+      // salts prematurs causats per lectures de posició incorrectes.
+      if (localCountdownRef.current <= 0 && confirmedSecRef.current >= minPlayed && !advancingRef.current) {
         advancingRef.current = true;
         stopPolling();
         setCountdown(null);
@@ -308,19 +395,37 @@ export default function SorteigPage() {
   }
 
   async function playNextBingo(customRemaining?: DbSorteigItem[]) {
-    const rem = customRemaining ?? remainingItems;
+    // Finalitzem la cançó anterior: si ha sonat almenys 5s (o tota la durada
+    // prevista, si és més curta) la marquem com a sonada; si no, la tornem a
+    // la bossa però l'excloem d'aquest sorteig per evitar repetir-la de seguida.
+    const prevIdx = pendingIndexRef.current;
+    let rem = customRemaining ?? remainingItems;
+    if (prevIdx != null && !committedRef.current) {
+      const threshold = Math.min(5, totalSecRef.current || 5);
+      if (confirmedSecRef.current >= threshold) {
+        setPlayedIndices(prev => prev.includes(prevIdx) ? prev : [...prev, prevIdx]);
+      } else {
+        const skipped = items[prevIdx];
+        const filtered = rem.filter(it => it !== skipped);
+        if (filtered.length > 0) rem = filtered;
+      }
+    }
+
     if (rem.length === 0) {
       setIsPlaying(false);
       setCurrentItem(null);
       setCountdown(null);
+      pendingIndexRef.current = null;
       return;
     }
     const idx = Math.floor(Math.random() * rem.length);
     const item = rem[idx];
     const itemIndex = items.indexOf(item);
 
-    setPlayedIndices(prev => [...prev, itemIndex]);
     setCurrentItem(item);
+    pendingIndexRef.current = itemIndex;
+    confirmedSecRef.current = 0;
+    committedRef.current = false;
 
     const inMs = item.in_ms ?? 30000;
     const outMs = item.out_ms ?? 60000;
@@ -336,6 +441,8 @@ export default function SorteigPage() {
 
     try {
       await playTrack(item.uri, inMs);
+      // Spotify de vegades ignora el position_ms inicial: forcem un re-seek
+      setTimeout(() => { seekTo(inMs).catch(() => {}); }, 400);
       setActiveUri(item.uri);
       setIsPlaying(true);
       startBingoPolling();
@@ -351,7 +458,7 @@ export default function SorteigPage() {
     }
     if (currentItem) {
       try {
-        await playTrack(currentItem.uri, 0);
+        await resumePlayback();
         setIsPlaying(true);
         startBingoPolling();
       } catch { /* ignore */ }
@@ -367,6 +474,9 @@ export default function SorteigPage() {
     setCountdown(null);
     setCountdownFraction(0);
     setIsPlaying(false);
+    pendingIndexRef.current = null;
+    confirmedSecRef.current = 0;
+    committedRef.current = false;
   }
 
   if (loading) {
@@ -399,6 +509,30 @@ export default function SorteigPage() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--text)', display: 'flex', flexDirection: 'column' }}>
+      {/* Avisos de línia/bingo */}
+      {toasts.length > 0 && (
+        <div style={{
+          position: 'fixed', top: 12, left: 0, right: 0, zIndex: 100,
+          display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+          pointerEvents: 'none', padding: '0 16px',
+        }}>
+          {toasts.map(t => (
+            <div key={t.id} className="fade-up" style={{
+              maxWidth: 460, width: '100%',
+              padding: '12px 18px', borderRadius: 14,
+              fontSize: 14, fontWeight: 700, textAlign: 'center',
+              background: t.kind === 'bingo' ? 'rgba(29,185,84,0.18)' : 'rgba(240,165,0,0.18)',
+              border: `1px solid ${t.kind === 'bingo' ? 'rgba(29,185,84,0.4)' : 'rgba(240,165,0,0.4)'}`,
+              color: t.kind === 'bingo' ? '#1DB954' : '#f0a500',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+              backdropFilter: 'blur(8px)',
+            }}>
+              {t.text}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Header */}
       <header style={{
         position: 'sticky', top: 0, zIndex: 10,

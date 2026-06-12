@@ -2,8 +2,8 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import {
-  fetchSorteigByShareCode, fetchSorteigItems, createTicket,
-  fetchTicketsByDevice, updateTicketMarked,
+  fetchSorteigByShareCode, fetchSorteig, fetchSorteigItems, createTicket,
+  fetchTicketsByDevice, updateTicketMarked, fetchTicketByCode, claimTicket,
   type DbSorteig, type DbSorteigItem, type DbTicket,
 } from '@/lib/supabase';
 
@@ -49,6 +49,34 @@ export default function ButlletaPage() {
 
   async function loadButlleta() {
     try {
+      const deviceId = getDeviceId();
+
+      // Mode pagament: el codi correspon a una butlleta concreta, d'un sol ús
+      const paymentTicket = await fetchTicketByCode(code);
+      if (paymentTicket) {
+        if (paymentTicket.claimed_at && paymentTicket.device_id !== deviceId) {
+          setError('Aquesta butlleta ja s\'ha utilitzat.');
+          setLoading(false);
+          return;
+        }
+        const s = await fetchSorteig(paymentTicket.sorteig_id!);
+        if (!s) { setError('Bingo no trobat'); setLoading(false); return; }
+        setSorteig(s);
+
+        const it = await fetchSorteigItems(s.id);
+        setItems(it);
+
+        const t = paymentTicket.claimed_at ? paymentTicket : await claimTicket(paymentTicket.id, deviceId);
+        setTicket(t);
+        setMarked(t.marked || []);
+
+        const songs = (t.song_positions || []).map((pos: number) => it[pos]).filter(Boolean);
+        setCardSongs(songs);
+        setLoading(false);
+        return;
+      }
+
+      // Mode free: codi compartit, butlleta autogenerada per dispositiu
       const s = await fetchSorteigByShareCode(code);
       if (!s) { setError('Bingo no trobat'); setLoading(false); return; }
       setSorteig(s);
@@ -56,7 +84,6 @@ export default function ButlletaPage() {
       const it = await fetchSorteigItems(s.id);
       setItems(it);
 
-      const deviceId = getDeviceId();
       const existing = await fetchTicketsByDevice(s.id, deviceId);
 
       let t: DbTicket;
@@ -148,6 +175,16 @@ export default function ButlletaPage() {
         <p style={{ fontSize: 12, color: 'rgba(240,240,250,0.4)' }}>
           La teva butlleta · {gridRows}×{gridCols}
         </p>
+        {ticket?.card_number != null && (
+          <p style={{
+            display: 'inline-block', marginTop: 8,
+            fontFamily: 'var(--font-mono, monospace)', fontSize: 12, fontWeight: 700,
+            color: '#1DB954', background: 'rgba(29,185,84,0.12)',
+            padding: '4px 12px', borderRadius: 999,
+          }}>
+            Targeta #{ticket.card_number}
+          </p>
+        )}
       </div>
 
       {allMarked && (
