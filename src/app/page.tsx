@@ -76,8 +76,8 @@ export default function Home() {
           uri: track.uri,
           title: track.name,
           artist: track.artists.map(a => a.name).join(', '),
-          in_ms: tc?.in_bingo != null ? tc.in_bingo * 1000 : null,
-          out_ms: tc?.out_bingo != null ? tc.out_bingo * 1000 : null,
+          in_ms: tc?.in_bingo ?? null,
+          out_ms: tc?.out_bingo ?? null,
           is_star: false,
         };
       });

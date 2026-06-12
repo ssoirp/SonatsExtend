@@ -184,7 +184,7 @@ export async function lookupSongTimecodes(spotifyUris: string[]): Promise<Map<st
   return map;
 }
 
-export async function saveSongTimecodes(spotifyUri: string, title: string, artist: string, inSec: number | null, outSec: number | null) {
+export async function saveSongTimecodes(spotifyUri: string, title: string, artist: string, inMs: number | null, outMs: number | null) {
   const { data: existing } = await supabase
     .from('songs')
     .select('id')
@@ -194,13 +194,13 @@ export async function saveSongTimecodes(spotifyUri: string, title: string, artis
   if (existing) {
     const { error } = await supabase
       .from('songs')
-      .update({ in_bingo: inSec, out_bingo: outSec })
+      .update({ in_bingo: inMs, out_bingo: outMs })
       .eq('id', existing.id);
     if (error) throw error;
   } else {
     const { error } = await supabase
       .from('songs')
-      .insert({ title, artist, spotify: spotifyUri, in_bingo: inSec, out_bingo: outSec });
+      .insert({ title, artist, spotify: spotifyUri, in_bingo: inMs, out_bingo: outMs });
     if (error) throw error;
   }
 }
