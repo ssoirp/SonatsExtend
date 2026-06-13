@@ -458,16 +458,19 @@ export default function SorteigPage() {
     // prevista, si és més curta) la marquem com a sonada; si no, la tornem a
     // la bossa però l'excloem d'aquest sorteig per evitar repetir-la de seguida.
     const prevIdx = pendingIndexRef.current;
-    let rem = customRemaining ?? remainingItems;
-    if (prevIdx != null) {
-      if (!committedRef.current) {
-        const threshold = Math.min(5, totalSecRef.current || 5);
-        if (confirmedSecRef.current >= threshold) {
-          addPlayedIndex(prevIdx);
-        }
+    if (prevIdx != null && !committedRef.current) {
+      const threshold = Math.min(5, totalSecRef.current || 5);
+      if (confirmedSecRef.current >= threshold) {
+        addPlayedIndex(prevIdx);
       }
-      // Sempre excloem la cançó anterior d'aquest sorteig, encara que
-      // `remainingItems` no s'hagi actualitzat encara (evita repetir-la).
+    }
+    // Calculem sempre la llista de pendents a partir de `playedIndicesRef`
+    // (sempre actualitzat), no de `remainingItems` (pot estar desactualitzat
+    // per closures antigues), per evitar repetir cançons ja sonades.
+    let rem = customRemaining ?? items.filter((_, i) => !playedIndicesRef.current.includes(i));
+    if (prevIdx != null && !playedIndicesRef.current.includes(prevIdx)) {
+      // La cançó anterior no s'ha marcat com a sonada (no ha arribat al
+      // mínim); l'excloem igualment d'aquest sorteig per no repetir-la de seguida.
       const prevSong = items[prevIdx];
       const filtered = rem.filter(it => it !== prevSong);
       if (filtered.length > 0) rem = filtered;
